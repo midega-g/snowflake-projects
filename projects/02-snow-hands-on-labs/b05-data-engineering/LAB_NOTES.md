@@ -473,9 +473,14 @@ The downloaded `DNGW_Sample_from_Agnies_Game.json` has the same name as the stag
 
 ## 15. Time zones
 - **UTC** is the reference time. GMT+0, UTC+0 and "Zulu" (`Z`) all mean the same offset. `UTC+5` means the UTC time plus 5 hours.
-- **Quiz:** at 1:00 AM in Greenwich, UTC+5 is 6:00 AM. The lab treats Greenwich as UTC+0. Strictly, the UK is on BST (UTC+1) until the last Sunday of October, which would make it 5:00 AM.
-- **Timestamp layout:** `YYYY-MM-DD HH24:MI:SS.FFF +HH:MI`. The final part is the direction and size of the offset from UTC, so `-0600` means UTC-6. That's Denver in October (MDT).
-- **Trial accounts default to `America/Los_Angeles`.** That's UTC-7 in summer (PDT) and UTC-8 in winter (PST). Time zone names come from the IANA tz database (`Region/City`). Use those rather than fixed offsets, because they follow daylight saving changes.
+- **Converting:** at 1:00 AM GMT, a UTC+5 zone reads 6:00 AM. Greenwich isn't always on GMT, though. The UK uses BST (UTC+1) from late March until the last Sunday of October, so 1:00 AM on a BST date in Greenwich is 5:00 AM in UTC+5.
+- **Timestamp layout:** in Snowflake format elements, a full timestamp is `YYYY-MM-DD HH24:MI:SS.FF3 TZH:TZM`.
+  - `YYYY`, `MM`, `DD`: 4-digit year, then 2-digit month and day.
+  - `HH24`: hour on the 24-hour clock, `00` to `23`. The `24` tells it apart from `HH12`, the 12-hour clock (`01` to `12`), which needs `AM`/`PM` to be unambiguous. A plain `HH` means `HH24`.
+  - `MI`, `SS`: 2-digit minutes and seconds. `MI` is used because `MM` already means month.
+  - `FF3`: fractional seconds to 3 digits, which is milliseconds. `FF9` gives nanoseconds, the most `TIMESTAMP` can hold.
+  - `TZH:TZM`: the offset from UTC in hours and minutes, with its sign giving the direction. `-06:00` (or `-0600`) means UTC-6, which is Denver in October (MDT).
+- **Trial accounts default to `America/Los_Angeles`.** That's UTC-7 in summer (PDT) and UTC-8 in winter (PST). Time zone names (`Region/City`) come from the [IANA time zone database](https://data.iana.org/time-zones/tzdb-2021a/zone1970.tab). Use those rather than fixed offsets, because they follow daylight saving changes.
 - **`ALTER SESSION SET TIMEZONE`** changes only the current session. In Snowsight, each worksheet is its own session. With the CLI, each `snow sql` run is a new session, so `sql/12_time_zones.sql` keeps the whole demo in one run. Results on 2026-11-18:
 
   | Session `TIMEZONE` | `CURRENT_TIMESTAMP()` |
@@ -490,7 +495,7 @@ The downloaded `DNGW_Sample_from_Agnies_Game.json` has the same name as the stag
 - **`SHOW PARAMETERS LIKE 'timezone'`** returned value `Asia/Shanghai` at level `SESSION`. The same command with `IN ACCOUNT` still showed `America/Los_Angeles`, with an empty level, meaning the account uses the default. Neither `CURRENT_TIMESTAMP` nor `SHOW` needed the warehouse.
 - **NTZ, LTZ and TZ:** see section 14. The session time zone changes how LTZ values display. NTZ values don't change.
 
-## 16. Challenge: a second file with a different shape
+## 16. A second file with a different shape
 `sql/13_load_updated_feed.sql` and `sql/14_filter_new_rows.sql`, as SYSADMIN.
 
 ### 16.1 Finding the file
@@ -519,7 +524,7 @@ It has 284 rows, all with the same key set:
 | `datetime_iso8601` | `2022-10-13T01:24:53Z` | `2022-10-14 22:28:58.000` |
 | Date range | 10 to 13 Oct 2022 | 14 to 16 Oct 2022 |
 
-**The timestamp format changed too.** The lab doesn't mention this. The new values have a space instead of `T`, add milliseconds, and **have no `Z`**. They no longer say which time zone they're in. They still parse: `TRY_TO_TIMESTAMP_NTZ` found no failures, because `AUTO` detection handles both layouts. But the `LOGS` column now mixes values known to be UTC with values of unknown zone. The ranges don't overlap and the new file starts right after the old one ends, which fits UTC. That's only consistent with UTC, not proof. Ask the data's owner before relying on it. In real work this belongs in a data contract with the source.
+**The timestamp format changed too.** The new values have a space instead of `T`, add milliseconds, and **have no `Z`**. They no longer say which time zone they're in. They still parse: `TRY_TO_TIMESTAMP_NTZ` found no failures, because `AUTO` detection handles both layouts. But the `LOGS` column now mixes values known to be UTC with values of unknown zone. The ranges don't overlap and the new file starts right after the old one ends, which fits UTC. That's only consistent with UTC, not proof. Ask the data's owner before relying on it. In real work this belongs in a data contract with the source.
 
 ### 16.3 Does GAME_LOGS need to change?
 **No.** `GAME_LOGS` has one `VARIANT` column, and the JSON keys live inside each value. A new or missing key changes nothing at the table level. This is "schema on read": the structure is applied when you query, not when you load.
@@ -536,7 +541,7 @@ ON_ERROR = ABORT_STATEMENT;
 ```
 - **Dry run first:** `VALIDATION_MODE = RETURN_ERRORS` returned no rows.
 - **Load:** `status LOADED, rows_parsed 284, rows_loaded 284, errors_seen 0`.
-- **Count:** `GAME_LOGS` now has **534** rows (250 + 284), the lab's quiz answer. The old rows were never touched, because COPY only appends.
+- **Count:** `GAME_LOGS` now has **534** rows (250 + 284). The old rows were never touched, because COPY only appends.
 - **Rerun:** "Copy executed with 0 files processed.", still 534.
 - **Wider path:** `FROM @uni_kishore` with no folder would also work, because load metadata would skip the kickoff file it already loaded. But that relies on the 64-day metadata window. The explicit folder states what is meant.
 
