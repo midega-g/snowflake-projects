@@ -807,6 +807,50 @@ SELECT PARSE_IP('100.41.16.0/24', 'inet');
 ```
 `/24` means the first 24 bits are fixed and the last 8 vary, so the network holds 256 addresses: 1680412672 to 1680412927. Geolocation tables store rows like this, one range per location. Looking up an address then means finding the range where `ipv4 BETWEEN range_start AND range_end`.
 
+## 20. Enhancement infrastructure
+### 20.1 The `ENHANCED` schema
+The raw feed lives in `RAW`. Enriched data goes in a separate schema, so the untouched source and the transformed result never mix. Each stage of a pipeline gets its own **layer**, and a layer can be rebuilt from the one before it. `sql/20_enhanced_schema.sql` creates `AGS_GAME_AUDIENCE.ENHANCED` as SYSADMIN.
+
+### 20.2 Getting a Marketplace listing
+A [listing](https://docs.snowflake.com/en/user-guide/data-marketplace-intro) is a provider's offer of a share: tables, views and functions in the provider's account. **Getting** it creates an **imported database** in your account that points at the provider's objects.
+- **No storage cost.** No data is copied. You pay only for the warehouse that runs your queries.
+- **Read-only.** You can't add or change objects in it.
+- **Always current.** The provider refreshes the data and you see the change at once. This listing is updated daily.
+
+Getting a listing needs ACCOUNTADMIN, or a role with the `IMPORT SHARE` privilege. The listing used here is **"IPinfo: IP Geolocation Training/Education Sample"**, free and licensed for internal training. It covers 7 countries at city level. In Snowsight's Get dialog:
+- **Database name:** `IPINFO_GEOLOC`.
+- **Roles that can access it, besides ACCOUNTADMIN:** `SYSADMIN`. The database then shows the grant `USAGE` to SYSADMIN.
+
+**SQL route.** [`CREATE DATABASE ... FROM LISTING '<global_name>'`](https://docs.snowflake.com/en/sql-reference/sql/create-database) does the same, with `GRANT IMPORTED PRIVILEGES ON DATABASE ... TO ROLE SYSADMIN` for the role access. `SHOW AVAILABLE LISTINGS` and `DESCRIBE AVAILABLE LISTING` give the global name and whether the listing can be imported in your region. Two limits apply:
+- The listing must be free.
+- If its terms are of type `STANDARD`, they must first be accepted once in Snowsight. Before that, the CREATE fails with "the terms for the associated listing ... have not been accepted."
+
+This listing has `STANDARD` terms, so the first Get happened in Snowsight. `sql/21_ipinfo_listing.sql` holds the SQL version, which reports "already exists" from then on, and the checks below.
+
+### 20.3 What the database contains
+| Schema | Contents |
+|---|---|
+| `DEMO` | The view `LOCATION`: 274,910 IP ranges with a place and time zone |
+| `PUBLIC` | Many secure views (`IP_GEOLOCATION`, `IP_PRIVACY` and others), sample tables such as `SAMPLE_IPS`, and helper functions such as `TO_INT`, `TO_IP` and `IP_LOCATION` |
+| `INFORMATION_SCHEMA` | Snowflake's metadata views, present in every database |
+
+There is no `RAW` schema. That name belongs to this project's own database.
+
+The provider's views are **secure views**. Their definitions are hidden from consumers, which a provider needs to protect its logic. The functions are secure too (`is_secure = Y`).
+
+`DEMO.LOCATION` columns:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `START_IP`, `END_IP` | VARCHAR | The range in dotted form |
+| `START_IP_INT`, `END_IP_INT` | VARIANT | The same range as integers |
+| `JOIN_KEY` | VARCHAR | A coarse key that narrows the range search before the `BETWEEN` |
+| `CITY`, `REGION`, `COUNTRY`, `POSTAL` | VARCHAR | The place |
+| `LAT`, `LNG` | FLOAT | Latitude and longitude |
+| `TIMEZONE` | VARCHAR | An IANA name such as `America/Denver` |
+
+The integer columns are the range layout from section 19.2. `PUBLIC.TO_INT` converts an address to that integer: `TO_INT('100.41.16.160')` returns `1680412832`, the same value `PARSE_IP(...):ipv4` gave.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -829,7 +873,9 @@ snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 snow sql -f projects/$P/sql/17_update_logs_view.sql
 snow sql -f projects/$P/sql/18_find_test_records.sql
 snow sql -f projects/$P/sql/19_parse_ip.sql
+snow sql -f projects/$P/sql/20_enhanced_schema.sql
+snow sql -f projects/$P/sql/21_ipinfo_listing.sql   # after the terms are accepted in Snowsight
 ```
 
 ## Next
-Continue with the lab's next step after the test records.
+Join `LOGS` to `IPINFO_GEOLOC.DEMO.LOCATION` on the IP range to add a time zone to each row.

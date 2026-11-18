@@ -35,6 +35,8 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 - `sql/17_update_logs_view.sql`: replaces `LOGS`: adds `ip_address`, drops `agent`, shows only the 284 new rows.
 - `sql/18_find_test_records.sql`: finds the test login and logout. Shows the timestamps are UTC.
 - `sql/19_parse_ip.sql`: `PARSE_IP` on the test IP: all keys, `ipv4` as an integer, and a `/24` range.
+- `sql/20_enhanced_schema.sql`: schema `AGS_GAME_AUDIENCE.ENHANCED` for the enriched data.
+- `sql/21_ipinfo_listing.sql`: IPinfo Marketplace sample as `IPINFO_GEOLOC`, shared to SYSADMIN, plus checks. Accept the listing terms in Snowsight first.
 - `data/`: local copies of lab data, gitignored.
 
 ## Run it
@@ -60,4 +62,6 @@ snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 snow sql -f projects/$P/sql/17_update_logs_view.sql
 snow sql -f projects/$P/sql/18_find_test_records.sql
 snow sql -f projects/$P/sql/19_parse_ip.sql
+snow sql -f projects/$P/sql/20_enhanced_schema.sql
+snow sql -f projects/$P/sql/21_ipinfo_listing.sql   # after the terms are accepted in Snowsight
 ```
