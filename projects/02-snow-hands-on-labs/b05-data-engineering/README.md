@@ -30,6 +30,8 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 - `sql/12_time_zones.sql`: session time zone demo.
 - `sql/13_load_updated_feed.sql`: checks and loads the `updated_feed/` file. Safe to rerun.
 - `sql/14_filter_new_rows.sql`: returns only the `updated_feed` rows, plus a cross-check.
+- `sql/15_missing_key_vs_json_null.sql`: missing key vs JSON null, on literals.
+- `sql/16_copy_with_file_metadata.sql`: COPY with `METADATA$FILENAME` into a temporary table. `GAME_LOGS` is untouched.
 - `data/`: local copies of lab data, gitignored.
 
 ## Run it
@@ -50,4 +52,6 @@ snow sql -f projects/$P/sql/11_logs_view.sql
 snow sql -f projects/$P/sql/12_time_zones.sql
 snow sql -f projects/$P/sql/13_load_updated_feed.sql
 snow sql -f projects/$P/sql/14_filter_new_rows.sql
+snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
+snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 ```

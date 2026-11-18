@@ -565,9 +565,131 @@ WHERE raw_log:agent IS NULL           -- removed field
 ```
 Result: 284 rows. Either condition alone gives the same rows. A cross-tab by key confirms it: `has_agent=true, has_ip=false` is 250 rows and `has_agent=false, has_ip=true` is 284. No row has both keys or neither.
 
-- **Missing key vs JSON `null`:** `raw_log:agent` on a row without the key returns **SQL NULL**, so `IS NULL` works. A key that is present with the JSON value `null` returns a VARIANT null instead. `IS NULL` is false for that, and `IS_NULL_VALUE()` is true. Here `IS NULL` counted 284 and `IS_NULL_VALUE` counted 0, so the key is missing, not null.
+- **`IS NULL` works here** because the key is missing in the new rows, not set to `null`. Section 16.7 explains the difference.
 - **Which test is stronger?** `ip_address IS NOT NULL` tests for something the new file has. `agent IS NULL` would also match any future file without `agent`, or a kickoff row with a missing value. Using both makes the filter exact for these two files.
-- **More reliable later:** record the source file during the load with `COPY INTO ... FROM (SELECT $1, METADATA$FILENAME FROM @stage)`. Then you filter by file and don't depend on the shape.
+- **Filtering by file instead of by shape** removes the guesswork. Section 16.8 shows how.
+
+### 16.7 Missing key vs JSON `null`
+JSON can say "no value" in two ways. The key can be left out (`{"ip_address": "1.2.3.4"}`), or it can be present with the value `null` (`{"agent": null}`). Snowflake keeps the two apart.
+- **A missing key** gives a real **SQL NULL**.
+- **A JSON `null`** gives a VARIANT that **holds** a null. Snowflake calls this `NULL_VALUE`. The VARIANT itself is not NULL.
+
+`sql/15_missing_key_vs_json_null.sql` tests all three cases on literal JSON, with no table involved:
+```sql
+WITH samples AS (
+  SELECT 'key present, string' AS case_name, PARSE_JSON('{"agent": "Mozilla/5.0"}') AS v UNION ALL
+  SELECT 'key present, null',                PARSE_JSON('{"agent": null}')          UNION ALL
+  SELECT 'key missing',                      PARSE_JSON('{"ip_address": "1.2.3.4"}')
+)
+SELECT case_name,
+       v:agent                AS agent_variant,
+       v:agent IS NULL        AS is_sql_null,
+       IS_NULL_VALUE(v:agent) AS is_json_null,
+       TYPEOF(v:agent)        AS typeof_agent,
+       v:agent::text          AS agent_text,
+       ARRAY_CONTAINS('agent'::variant, OBJECT_KEYS(v)) AS has_key
+FROM samples;
+```
+| case_name | agent_variant | is_sql_null | is_json_null | typeof_agent | agent_text | has_key |
+|---|---|---|---|---|---|---|
+| key present, string | `"Mozilla/5.0"` | false | false | `VARCHAR` | `Mozilla/5.0` | true |
+| key present, null | `null` | **false** | **true** | `NULL_VALUE` | NULL | true |
+| key missing | NULL | **true** | NULL | NULL | NULL | false |
+
+What the output shows:
+- **`IS NULL` is false for a JSON null.** The VARIANT holds something: the JSON `null` itself. So `WHERE v:agent IS NULL` misses those rows.
+- **`IS_NULL_VALUE()` only finds JSON nulls.** For a missing key it returns NULL, not false, because there's nothing to test. `NOT IS_NULL_VALUE(...)` therefore drops missing-key rows as well.
+- **A cast hides the difference.** `v:agent::text` is SQL NULL in both cases. After casting, as the `LOGS` view does, you can no longer tell which case a row was.
+- **To ask "is the key there?" directly**, test the key list: `ARRAY_CONTAINS('agent'::variant, OBJECT_KEYS(v))`. It's true even when the value is `null`.
+
+Which test to use:
+
+| Question | Test |
+|---|---|
+| No usable value, for either reason | `v:agent::text IS NULL`, or `v:agent IS NULL OR IS_NULL_VALUE(v:agent)` |
+| Key missing | `v:agent IS NULL` |
+| Key present but `null` | `IS_NULL_VALUE(v:agent)` |
+| Key present, whatever its value | `ARRAY_CONTAINS('agent'::variant, OBJECT_KEYS(v))` |
+
+**Turning JSON nulls into missing keys:** `STRIP_NULL_VALUE(v:agent)` converts a JSON null to SQL NULL. `STRIP_NULL_VALUE(PARSE_JSON('{"agent": null}'):agent) IS NULL` returned true. For a whole load, the JSON file format option `STRIP_NULL_VALUES = TRUE` drops every `"key": null` pair as the data loads. `FF_JSON_LOGS` keeps the default `FALSE`. Stripping makes filters simpler, but it loses the information that the source sent an explicit null.
+
+**On `GAME_LOGS`:** `COUNT_IF(raw_log:agent IS NULL)` gave 284 and `COUNT_IF(IS_NULL_VALUE(raw_log:agent))` gave 0. The updated feed leaves `agent` out entirely, so the filter in 16.6 is correct.
+
+### 16.8 Recording the source file during the load
+Every staged file has **metadata columns** you can select next to `$1`:
+
+| Column | Value |
+|---|---|
+| `METADATA$FILENAME` | File path **relative to the stage**, e.g. `updated_feed/DNGW_updated_feed_0_0_0.json`. `LIST` shows the full `s3://` URL instead |
+| `METADATA$FILE_ROW_NUMBER` | Row number within the file, starting at 1. With `STRIP_OUTER_ARRAY` it counts array elements |
+| `METADATA$FILE_LAST_MODIFIED` | When the file was last written to storage, as `TIMESTAMP_NTZ` in UTC |
+| `METADATA$FILE_CONTENT_KEY` | Checksum of the file content |
+| `METADATA$START_SCAN_TIME` | When Snowflake started reading the file |
+
+They exist only while Snowflake reads files from a stage. A plain `COPY` doesn't keep them, so `GAME_LOGS` has no record of which file each row came from. That's why 16.6 had to tell the files apart by their keys.
+
+`sql/16_copy_with_file_metadata.sql` shows the pattern. It loads into a **temporary table**, which exists only for the session and is dropped when the session ends, so the lab's `GAME_LOGS` stays exactly as the lab expects.
+
+**1. Reading the metadata from the stage, before any load:**
+```sql
+SELECT METADATA$FILENAME AS file_name,
+       MIN(METADATA$FILE_ROW_NUMBER) AS first_row, MAX(METADATA$FILE_ROW_NUMBER) AS last_row,
+       ANY_VALUE(METADATA$FILE_LAST_MODIFIED) AS file_last_modified, COUNT(*) AS n_rows
+FROM @uni_kishore (file_format => 'ff_json_logs')
+GROUP BY 1 ORDER BY 1;
+```
+| file_name | first_row | last_row | file_last_modified | n_rows |
+|---|---|---|---|---|
+| `kickoff/DNGW_Sample_from_Agnies_Game.json` | 1 | 250 | 2022-12-04 15:08:22 | 250 |
+| `updated_feed/DNGW_updated_feed_0_0_0.json` | 1 | 284 | 2023-02-25 17:10:52 | 284 |
+
+**2. Loading with COPY plus a SELECT** (a "transforming" COPY):
+```sql
+CREATE TEMPORARY TABLE game_logs_with_file (
+    raw_log VARIANT, file_name VARCHAR, file_row_number NUMBER, loaded_at TIMESTAMP_LTZ);
+
+COPY INTO game_logs_with_file (raw_log, file_name, file_row_number, loaded_at)
+FROM (
+  SELECT $1, METADATA$FILENAME, METADATA$FILE_ROW_NUMBER, CURRENT_TIMESTAMP()
+  FROM @uni_kishore
+)
+FILE_FORMAT = (FORMAT_NAME = ff_json_logs)
+PATTERN = '.*[.]json'
+ON_ERROR = ABORT_STATEMENT;
+```
+Both files loaded: `updated_feed` with 284 rows and `kickoff` with 250, and no errors.
+- **The column list** `(raw_log, file_name, ...)` matches the SELECT's columns by position.
+- **Stage queries in this form allow only simple transforms:** picking `$` columns, casts, metadata columns, and functions such as `CURRENT_TIMESTAMP()`. No `WHERE`, `GROUP BY` or joins.
+- **`VALIDATION_MODE` can't be used with a transforming COPY** (section 12.2). For a dry run, query the stage with the same SELECT first.
+- **`PATTERN`** limits the load to `.json` files across both folders. `FROM @uni_kishore` alone would also pick up any other files in the bucket.
+- **A fresh table has fresh load metadata**, so both files loaded even though `GAME_LOGS` had already loaded them. Load metadata belongs to the table, not to the stage.
+
+**3. Filtering by file, not by shape:**
+```sql
+SELECT file_name, COUNT(*) FROM game_logs_with_file GROUP BY 1 ORDER BY 1;
+-- kickoff/DNGW_Sample_from_Agnies_Game.json    250
+-- updated_feed/DNGW_updated_feed_0_0_0.json    284
+
+SELECT raw_log:ip_address::text AS ip_address, raw_log:user_login::text AS user_login,
+       file_name, file_row_number
+FROM game_logs_with_file
+WHERE file_name LIKE 'updated_feed/%'
+ORDER BY file_row_number LIMIT 3;
+```
+| ip_address | user_login | file_name | file_row_number |
+|---|---|---|---|
+| 184.105.65.130 | Woźniak31 | updated_feed/DNGW_updated_feed_0_0_0.json | 1 |
+| 185.180.206.138 | Nowak11 | updated_feed/DNGW_updated_feed_0_0_0.json | 2 |
+| 212.77.102.236 | Adamski76 | updated_feed/DNGW_updated_feed_0_0_0.json | 3 |
+
+**Why this is common practice:**
+- **Lineage:** each row points back to its exact file and line. A bad value can be traced to the delivery it came in.
+- **Filtering:** "rows from the second file" becomes `WHERE file_name LIKE 'updated_feed/%'`. It keeps working when a later file has the same keys as an earlier one, which the 16.6 shape filter can't handle.
+- **Reloading:** to replace one bad file, run `DELETE ... WHERE file_name = '...'` and then `COPY ... FILES = ('...') FORCE = TRUE`. Nothing else is touched.
+- **Audit:** `loaded_at` records when the row arrived. That's different from the event time inside the JSON.
+
+The cost is a few extra columns per row, which compress well because they repeat. Afterwards, `SHOW TABLES` in `RAW` listed only `GAME_LOGS` with 534 rows, which confirms the temporary table was gone.
+
 
 ## Run order
 ```bash
@@ -586,6 +708,8 @@ snow sql -f projects/$P/sql/11_logs_view.sql
 snow sql -f projects/$P/sql/12_time_zones.sql
 snow sql -f projects/$P/sql/13_load_updated_feed.sql
 snow sql -f projects/$P/sql/14_filter_new_rows.sql
+snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
+snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 ```
 
 ## Next
