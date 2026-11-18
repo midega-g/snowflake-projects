@@ -659,7 +659,7 @@ ON_ERROR = ABORT_STATEMENT;
 ```
 Both files loaded: `updated_feed` with 284 rows and `kickoff` with 250, and no errors.
 - **The column list** `(raw_log, file_name, ...)` matches the SELECT's columns by position.
-- **Stage queries in this form allow only simple transforms:** picking `$` columns, casts, metadata columns, and functions such as `CURRENT_TIMESTAMP()`. No `WHERE`, `GROUP BY` or joins.
+- **Stage queries in this form allow only simple transforms:** picking `$` columns, casts, metadata columns, and functions such as `CURRENT_TIMESTAMP()`. Snowflake's "Transforming data during a load" page rules out `WHERE`, `GROUP BY`, `JOIN`, `FLATTEN`, `ORDER BY`, `LIMIT` and `MATCH_BY_COLUMN_NAME`.
 - **`VALIDATION_MODE` can't be used with a transforming COPY** (section 12.2). For a dry run, query the stage with the same SELECT first.
 - **`PATTERN`** limits the load to `.json` files across both folders. `FROM @uni_kishore` alone would also pick up any other files in the bucket.
 - **A fresh table has fresh load metadata**, so both files loaded even though `GAME_LOGS` had already loaded them. Load metadata belongs to the table, not to the stage.
