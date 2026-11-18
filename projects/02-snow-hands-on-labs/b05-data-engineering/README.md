@@ -37,6 +37,9 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 - `sql/19_parse_ip.sql`: `PARSE_IP` on the test IP: all keys, `ipv4` as an integer, and a `/24` range.
 - `sql/20_enhanced_schema.sql`: schema `AGS_GAME_AUDIENCE.ENHANCED` for the enriched data.
 - `sql/21_ipinfo_listing.sql`: IPinfo Marketplace sample as `IPINFO_GEOLOC`, shared to SYSADMIN, plus checks. Accept the listing terms in Snowsight first.
+- `sql/22_ip_location_join.sql`: time zone lookups against `IPINFO_GEOLOC.DEMO.LOCATION`, by range only and with `TO_JOIN_KEY` and `TO_INT`.
+- `sql/23_time_of_day_lu.sql`: `RAW.TIME_OF_DAY_LU`, 24 rows mapping each hour to a time-of-day name.
+- `sql/24_logs_enhanced.sql`: CTAS of `ENHANCED.LOGS_ENHANCED` with local time, day name and time of day, plus checks.
 - `data/`: local copies of lab data, gitignored.
 
 ## Run it
@@ -64,4 +67,7 @@ snow sql -f projects/$P/sql/18_find_test_records.sql
 snow sql -f projects/$P/sql/19_parse_ip.sql
 snow sql -f projects/$P/sql/20_enhanced_schema.sql
 snow sql -f projects/$P/sql/21_ipinfo_listing.sql   # after the terms are accepted in Snowsight
+snow sql -f projects/$P/sql/22_ip_location_join.sql
+snow sql -f projects/$P/sql/23_time_of_day_lu.sql
+snow sql -f projects/$P/sql/24_logs_enhanced.sql
 ```
