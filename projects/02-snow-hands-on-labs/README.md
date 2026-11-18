@@ -5,7 +5,7 @@ Five badge labs, pure Snowflake (no dbt). Each badge is a mini project in its ow
 | Folder | Badge | Main objects |
 |---|---|---|
 | `b01-data-warehousing/` | 1 - Data Warehousing | `DEMO_DB` |
-| `b05-data-engineering/` | 5 - Data Engineering | `COMPUTE_WH` + `COMPUTE_WH_RM`, `UTIL_DB`, `DORA_API_INTEGRATION`, DORA `GRADER` (test passed), user defaults |
+| `b05-data-engineering/` | 5 - Data Engineering | `COMPUTE_WH` + `COMPUTE_WH_RM`, `UTIL_DB`, `DORA_API_INTEGRATION`, DORA `GRADER` (test passed), `AGS_GAME_AUDIENCE.RAW`, user defaults |
 
 ## Shared vs per-badge config
 | File | Where | Committed | Holds |

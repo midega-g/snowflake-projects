@@ -315,6 +315,66 @@ FROM (SELECT 'DORA_IS_WORKING' AS step, (SELECT 123) AS actual, 123 AS expected,
 - **Warehouse:** the query ran on `COMPUTE_WH` (from `INFORMATION_SCHEMA.QUERY_HISTORY`). It took 1.7 s total, mostly the round trip to API Gateway. The warehouse auto-resumed for the call, and a check 75 s later showed it `SUSPENDED` again. An external function needs a running warehouse. Creating one doesn't, because creation is metadata only.
 - **The 90-day window:** DORA counts from your first check to your last. All checks must fall within 90 days for the badge. Checks older than that must be rerun. The test above starts the clock (2026-11-18).
 
+## 11. Project infrastructure: AGS_GAME_AUDIENCE
+`sql/07_ags_game_audience.sql`, run as SYSADMIN. A read-only check beforehand (as SYSADMIN and as ACCOUNTADMIN) found no `AGS%` database.
+
+### 11.1 Database and schemas
+```sql
+USE ROLE SYSADMIN;
+CREATE DATABASE IF NOT EXISTS AGS_GAME_AUDIENCE;
+DROP SCHEMA IF EXISTS AGS_GAME_AUDIENCE.PUBLIC;
+CREATE SCHEMA IF NOT EXISTS AGS_GAME_AUDIENCE.RAW;
+USE SCHEMA AGS_GAME_AUDIENCE.RAW;
+```
+- **Every new database gets `PUBLIC` and `INFORMATION_SCHEMA`.** You can drop `PUBLIC`, but not `INFORMATION_SCHEMA`, which is a read-only view of the database's metadata. After the drop, `SHOW SCHEMAS IN DATABASE AGS_GAME_AUDIENCE` listed only `INFORMATION_SCHEMA` and `RAW`.
+- **Qualify the drop.** `CREATE DATABASE` also makes the new database and its `PUBLIC` schema the session's current context. A bare `DROP SCHEMA PUBLIC` works right after the create, but on a rerun it would hit whichever database is current. `AGS_GAME_AUDIENCE.PUBLIC` can only hit this one.
+- **Reset the context.** The dropped schema was the current one, so run `USE SCHEMA ... RAW` before creating anything unqualified.
+- **Owner check:** the database, `RAW`, and everything below are owned by SYSADMIN, because SYSADMIN was the primary role (see "Primary and secondary roles"). If something had been created by the wrong role, the lab's fix would be `GRANT OWNERSHIP ON <object> <name> TO ROLE SYSADMIN COPY CURRENT GRANTS;`. A wrong name would be fixed with `ALTER <object> <old> RENAME TO <new>;`.
+
+### 11.2 Table for raw JSON
+```sql
+CREATE TABLE IF NOT EXISTS AGS_GAME_AUDIENCE.RAW.GAME_LOGS (RAW_LOG VARIANT);
+```
+- **`VARIANT`** holds any semi-structured value (an object, an array, or a scalar) up to 128 MB per value, uncompressed. Each JSON record lands in one row with no fixed columns. You pull fields out later with `raw_log:field::type`.
+- **Code templates:** the lab builds this in Snowsight from a template (in a worksheet, the `+` menu or the database object explorer offers prefilled `CREATE` statements). The CLI has no templates, so we typed the statement. The result is the same.
+
+### 11.3 External stage
+```sql
+CREATE STAGE IF NOT EXISTS AGS_GAME_AUDIENCE.RAW.UNI_KISHORE
+  URL = 's3://uni-kishore'
+  DIRECTORY = (ENABLE = TRUE);
+```
+- **External stage:** a named pointer to a cloud storage location. Snowflake reads the files where they are. Nothing is copied until you load.
+- **No credentials or storage integration:** `SHOW STAGES` shows `type EXTERNAL`, `has_credentials N`. The lab bucket allows public reads. A private bucket would need a `STORAGE_INTEGRATION` (see the table in 8.1) or keys.
+- **Dash vs underscore:** S3 bucket names allow dashes but not underscores (`uni-kishore`). Snowflake identifiers allow underscores, and dashes only in quotes (`uni_kishore`).
+- **Directory table** (`directory_enabled Y`): a file catalogue stored with the stage. Snowsight can browse the files, and `SELECT * FROM DIRECTORY(@uni_kishore)` lists them with metadata. On an external stage it isn't refreshed automatically unless `AUTO_REFRESH` and cloud event notifications are set up. After new files arrive, run `ALTER STAGE uni_kishore REFRESH;`.
+
+### 11.4 Testing the stage
+```sql
+LIST @uni_kishore/kickoff;
+```
+One file:
+
+| name | size | last_modified |
+|---|---|---|
+| `s3://uni-kishore/kickoff/DNGW_Sample_from_Agnies_Game.json` | 52071 | Sun, 4 Dec 2022 15:08:22 GMT |
+
+- **`LIST` returns the full cloud path**, not a path relative to the stage. The text after `@uni_kishore/` is a prefix filter, so `kickoff` matches the `kickoff/` folder.
+- **Cost:** `LIST`, `SHOW` and every `CREATE` here ran in cloud services. `COMPUTE_WH` stayed `SUSPENDED`.
+
+### 11.5 File format
+```sql
+CREATE FILE FORMAT IF NOT EXISTS AGS_GAME_AUDIENCE.RAW.FF_JSON_LOGS
+  TYPE = JSON
+  STRIP_OUTER_ARRAY = TRUE;
+```
+- **A file format** is a named, reusable set of parsing options for `COPY INTO` and for querying staged files.
+- **`STRIP_OUTER_ARRAY = TRUE`:** a file shaped `[ {...}, {...} ]` becomes one row per element. Without it, the whole array would be a single VARIANT value in one row, and that row is capped by VARIANT's size limit.
+- **Defaults:** `SHOW FILE FORMATS` returned the other JSON options at their defaults: `COMPRESSION AUTO`, `STRIP_NULL_VALUES false`, `ALLOW_DUPLICATE false`, `IGNORE_UTF8_ERRORS false`, `MULTI_LINE true`.
+
+### 11.6 Rerun
+A second run of `07` reported "already exists" for each object, and "PUBLIC already dropped" for the drop. `sql/08_ags_verify.sql` repeats the `SHOW` and `LIST` checks.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -324,7 +384,9 @@ snow sql -f projects/$P/sql/03_verify.sql
 snow sql -f projects/$P/sql/04_dora_api_integration.sql
 snow sql -f projects/$P/sql/05_dora_grader.sql
 snow sql -f projects/$P/sql/06_dora_test.sql
+snow sql -f projects/$P/sql/07_ags_game_audience.sql
+snow sql -f projects/$P/sql/08_ags_verify.sql
 ```
 
 ## Next
-The lab's real DORA checks, each one a `grader(...)` call run as ACCOUNTADMIN in `UTIL_DB.PUBLIC`.
+Load the kickoff file into `GAME_LOGS` with `FF_JSON_LOGS` and check it with DORA.
