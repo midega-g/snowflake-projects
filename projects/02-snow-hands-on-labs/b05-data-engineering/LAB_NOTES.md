@@ -717,14 +717,14 @@ CREATE OR REPLACE VIEW AGS_GAME_AUDIENCE.RAW.LOGS AS (
 
 **Schema-on-read.** The table took both files without any change, because a VARIANT column accepts any JSON. The structure is decided when the data is read, by the view. When the source changed its keys, only the view had to change. In a schema-on-write system the load itself would have failed or needed a table change first (section 16.3).
 
-## 18. Finding Prajina's test records
-Kishore's sister Prajina played a test session. The lab's photo of it shows **7:22 PM on Saturday, 15 October 2022**, in her local time, which is UTC-6.
+## 18. Checking the time zone with a known test event
+A test record with a known time is a simple way to find out which clock a feed uses. Here the test login happened at **7:22 PM on Saturday, 15 October 2022**, local time, in a zone at UTC-6.
 - **On the 24-hour clock**, 7:22 PM is 19:22. ISO 8601 always uses the 24-hour clock (the `HH24` element from section 15).
 - **In UTC**, add 6 hours: 19:22 + 6:00 = 25:22, which rolls over to **01:22 on Sunday, 16 October**.
 
 So the log should show either `2022-10-15 19:22` (local time) or `2022-10-16 01:22` (UTC).
 
-Her gamer name probably contains "prajina", but the exact form is unknown. `ILIKE` is a case-insensitive `LIKE`, and `%` matches any run of characters, so `'%prajina%'` finds the name anywhere in the login. `sql/18_find_prajina.sql`:
+**Searching when only part of a value is known.** `ILIKE` is a case-insensitive `LIKE`, and `%` matches any run of characters, including none. Assuming the test user's login contains `prajina` somewhere, `'%prajina%'` matches it whether it is `prajina`, `Prajina99` or `princess_prajina`. `sql/18_find_test_records.sql`:
 ```sql
 SELECT user_login, user_event, datetime_iso8601, ip_address
 FROM AGS_GAME_AUDIENCE.RAW.LOGS
@@ -736,9 +736,9 @@ ORDER BY datetime_iso8601;
 | princess_prajina | login | 2022-10-16 01:22:15 | 100.41.16.160 |
 | princess_prajina | logout | 2022-10-16 01:39:15 | 100.41.16.160 |
 
-- **Two rows only:** a login and a logout 17 minutes later, from the same IP. `ILIKE '%kishore%'` found no logins.
+- **Two rows match:** a login and a logout 17 minutes later, from the same IP.
 - **The login is at 01:22 on Sunday, the UTC value.** No row exists at 19:22 on Saturday.
-- **Conclusion: the `updated_feed` timestamps are UTC**, even though they no longer carry a `Z`. They are not in the player's local time (LTZ). This settles the question from section 16.2. Both files are UTC, so `TIMESTAMP_NTZ` in the view holds UTC wall-clock times throughout.
+- **Conclusion: the `updated_feed` timestamps are UTC**, even though they no longer carry a `Z`. They are not in the user's local time (LTZ). This settles the question from section 16.2. Both files are UTC, so `TIMESTAMP_NTZ` in the view holds UTC wall-clock times throughout.
 
 ## Run order
 ```bash
@@ -760,7 +760,7 @@ snow sql -f projects/$P/sql/14_filter_new_rows.sql
 snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
 snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 snow sql -f projects/$P/sql/17_update_logs_view.sql
-snow sql -f projects/$P/sql/18_find_prajina.sql
+snow sql -f projects/$P/sql/18_find_test_records.sql
 ```
 
 ## Next
