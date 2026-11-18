@@ -26,12 +26,14 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 - `sql/08_ags_verify.sql`: SHOW checks and `LIST @uni_kishore/kickoff`.
 - `sql/09_explore_kickoff.sql`: queries the staged file, plus a `VALIDATION_MODE` dry run.
 - `sql/10_load_game_logs.sql`: COPY INTO `GAME_LOGS`. Safe to rerun (load metadata).
-- `sql/11_logs_view.sql`: the `LOGS` view.
+- `sql/11_logs_view.sql`: the first `LOGS` view (kickoff columns).
 - `sql/12_time_zones.sql`: session time zone demo.
 - `sql/13_load_updated_feed.sql`: checks and loads the `updated_feed/` file. Safe to rerun.
 - `sql/14_filter_new_rows.sql`: returns only the `updated_feed` rows, plus a cross-check.
 - `sql/15_missing_key_vs_json_null.sql`: missing key vs JSON null, on literals.
 - `sql/16_copy_with_file_metadata.sql`: COPY with `METADATA$FILENAME` into a temporary table. `GAME_LOGS` is untouched.
+- `sql/17_update_logs_view.sql`: replaces `LOGS`: adds `ip_address`, drops `agent`, shows only the 284 new rows.
+- `sql/18_find_prajina.sql`: finds the test login and logout. Shows the timestamps are UTC.
 - `data/`: local copies of lab data, gitignored.
 
 ## Run it
@@ -54,4 +56,6 @@ snow sql -f projects/$P/sql/13_load_updated_feed.sql
 snow sql -f projects/$P/sql/14_filter_new_rows.sql
 snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
 snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
+snow sql -f projects/$P/sql/17_update_logs_view.sql
+snow sql -f projects/$P/sql/18_find_prajina.sql
 ```

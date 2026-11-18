@@ -524,7 +524,7 @@ It has 284 rows, all with the same key set:
 | `datetime_iso8601` | `2022-10-13T01:24:53Z` | `2022-10-14 22:28:58.000` |
 | Date range | 10 to 13 Oct 2022 | 14 to 16 Oct 2022 |
 
-**The timestamp format changed too.** The new values have a space instead of `T`, add milliseconds, and **have no `Z`**. They no longer say which time zone they're in. They still parse: `TRY_TO_TIMESTAMP_NTZ` found no failures, because `AUTO` detection handles both layouts. But the `LOGS` column now mixes values known to be UTC with values of unknown zone. The ranges don't overlap and the new file starts right after the old one ends, which fits UTC. That's only consistent with UTC, not proof. Ask the data's owner before relying on it. In real work this belongs in a data contract with the source.
+**The timestamp format changed too.** The new values have a space instead of `T`, add milliseconds, and **have no `Z`**. They no longer say which time zone they're in. They still parse: `TRY_TO_TIMESTAMP_NTZ` found no failures, because `AUTO` detection handles both layouts. But the `LOGS` column now mixes values known to be UTC with values of unknown zone. The ranges don't overlap and the new file starts right after the old one ends, which fits UTC. That's only consistent with UTC, not proof. Ask the data's owner before relying on it. In real work this belongs in a data contract with the source. Section 18 settles it with known test records: the values are UTC.
 
 ### 16.3 Does GAME_LOGS need to change?
 **No.** `GAME_LOGS` has one `VARIANT` column, and the JSON keys live inside each value. A new or missing key changes nothing at the table level. This is "schema on read": the structure is applied when you query, not when you load.
@@ -691,6 +691,55 @@ ORDER BY file_row_number LIMIT 3;
 The cost is a few extra columns per row, which compress well because they repeat. Afterwards, `SHOW TABLES` in `RAW` listed only `GAME_LOGS` with 534 rows, which confirms the temporary table was gone.
 
 
+## 17. Updating the LOGS view
+The view from section 14 was built for the kickoff file. It now shows all 534 rows, with `AGENT` empty for the 284 new ones and no `IP_ADDRESS` column. `sql/17_update_logs_view.sql` replaces it:
+```sql
+CREATE OR REPLACE VIEW AGS_GAME_AUDIENCE.RAW.LOGS AS (
+  SELECT
+      raw_log:ip_address::text                  AS ip_address
+    , raw_log:user_event::text                  AS user_event
+    , raw_log:user_login::text                  AS user_login
+    , raw_log:datetime_iso8601::timestamp_ntz   AS datetime_iso8601
+    , raw_log
+  FROM AGS_GAME_AUDIENCE.RAW.GAME_LOGS
+  WHERE raw_log:ip_address::text IS NOT NULL
+);
+```
+- **`CREATE OR REPLACE`** swaps the definition in one statement. A plain `CREATE VIEW` fails because `LOGS` already exists. Replacing a view also resets its grants unless you add `COPY GRANTS`. That doesn't matter here, because only SYSADMIN uses it.
+- **`AGENT` is dropped** because no row the view returns has it. **`IP_ADDRESS` is added** as text.
+- **The `WHERE` clause hides the kickoff rows. It doesn't delete them.** A view is a saved query, so `GAME_LOGS` still holds all 534 rows. The filter tests for the key the new file has, as section 16.6 recommends.
+- **Column order doesn't matter** to anyone querying by name. `raw_log` stays last so the parsed columns come first.
+
+**Checks:**
+- `SELECT COUNT(*), COUNT(ip_address) FROM LOGS` gave 284 and 284.
+- `SELECT COUNT(*) FROM GAME_LOGS` still gave 534.
+- `DESC VIEW LOGS` lists `IP_ADDRESS`, `USER_EVENT`, `USER_LOGIN` (all `VARCHAR`), `DATETIME_ISO8601` (`TIMESTAMP_NTZ(9)`) and `RAW_LOG` (`VARIANT`).
+
+**Schema-on-read.** The table took both files without any change, because a VARIANT column accepts any JSON. The structure is decided when the data is read, by the view. When the source changed its keys, only the view had to change. In a schema-on-write system the load itself would have failed or needed a table change first (section 16.3).
+
+## 18. Finding Prajina's test records
+Kishore's sister Prajina played a test session. The lab's photo of it shows **7:22 PM on Saturday, 15 October 2022**, in her local time, which is UTC-6.
+- **On the 24-hour clock**, 7:22 PM is 19:22. ISO 8601 always uses the 24-hour clock (the `HH24` element from section 15).
+- **In UTC**, add 6 hours: 19:22 + 6:00 = 25:22, which rolls over to **01:22 on Sunday, 16 October**.
+
+So the log should show either `2022-10-15 19:22` (local time) or `2022-10-16 01:22` (UTC).
+
+Her gamer name probably contains "prajina", but the exact form is unknown. `ILIKE` is a case-insensitive `LIKE`, and `%` matches any run of characters, so `'%prajina%'` finds the name anywhere in the login. `sql/18_find_prajina.sql`:
+```sql
+SELECT user_login, user_event, datetime_iso8601, ip_address
+FROM AGS_GAME_AUDIENCE.RAW.LOGS
+WHERE user_login ILIKE '%prajina%'
+ORDER BY datetime_iso8601;
+```
+| user_login | user_event | datetime_iso8601 | ip_address |
+|---|---|---|---|
+| princess_prajina | login | 2022-10-16 01:22:15 | 100.41.16.160 |
+| princess_prajina | logout | 2022-10-16 01:39:15 | 100.41.16.160 |
+
+- **Two rows only:** a login and a logout 17 minutes later, from the same IP. `ILIKE '%kishore%'` found no logins.
+- **The login is at 01:22 on Sunday, the UTC value.** No row exists at 19:22 on Saturday.
+- **Conclusion: the `updated_feed` timestamps are UTC**, even though they no longer carry a `Z`. They are not in the player's local time (LTZ). This settles the question from section 16.2. Both files are UTC, so `TIMESTAMP_NTZ` in the view holds UTC wall-clock times throughout.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -710,7 +759,9 @@ snow sql -f projects/$P/sql/13_load_updated_feed.sql
 snow sql -f projects/$P/sql/14_filter_new_rows.sql
 snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
 snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
+snow sql -f projects/$P/sql/17_update_logs_view.sql
+snow sql -f projects/$P/sql/18_find_prajina.sql
 ```
 
 ## Next
-Update the `LOGS` view for `ip_address` and the missing `agent` (16.5). Confirm the time zone of the new timestamps (16.2).
+Continue with the lab's next step after the test records.
