@@ -471,6 +471,99 @@ CREATE OR REPLACE VIEW AGS_GAME_AUDIENCE.RAW.LOGS AS (
 ### 14.1 The local sample is a different file
 The downloaded `DNGW_Sample_from_Agnies_Game.json` has the same name as the staged file but different contents: 2.5 MB, 10,000 records, and a fifth key `game_subscription_type`. The staged file is 52,071 bytes with 250 records and 4 keys. Everything above uses the staged file. The local copy sits in `data/`, which is gitignored because it's over the 500 KB large-file hook.
 
+## 15. Time zones
+- **UTC** is the reference time. GMT+0, UTC+0 and "Zulu" (`Z`) all mean the same offset. `UTC+5` means the UTC time plus 5 hours.
+- **Quiz:** at 1:00 AM in Greenwich, UTC+5 is 6:00 AM. The lab treats Greenwich as UTC+0. Strictly, the UK is on BST (UTC+1) until the last Sunday of October, which would make it 5:00 AM.
+- **Timestamp layout:** `YYYY-MM-DD HH24:MI:SS.FFF +HH:MI`. The final part is the direction and size of the offset from UTC, so `-0600` means UTC-6. That's Denver in October (MDT).
+- **Trial accounts default to `America/Los_Angeles`.** That's UTC-7 in summer (PDT) and UTC-8 in winter (PST). Time zone names come from the IANA tz database (`Region/City`). Use those rather than fixed offsets, because they follow daylight saving changes.
+- **`ALTER SESSION SET TIMEZONE`** changes only the current session. In Snowsight, each worksheet is its own session. With the CLI, each `snow sql` run is a new session, so `sql/12_time_zones.sql` keeps the whole demo in one run. Results on 2026-11-18:
+
+  | Session `TIMEZONE` | `CURRENT_TIMESTAMP()` |
+  |---|---|
+  | (default) America/Los_Angeles | `2026-11-18T00:45:11.807-08:00` (PST) |
+  | UTC | `2026-11-18T08:45:12.666+00:00` |
+  | Africa/Nairobi | `2026-11-18T11:45:13.499+03:00` (no DST) |
+  | Pacific/Funafuti | `2026-11-18T20:45:14.642+12:00` |
+  | Asia/Shanghai | `2026-11-18T16:45:15.708+08:00` |
+
+  The clock time changed while the moment stayed the same, 08:45 UTC (about a second apart per query).
+- **`SHOW PARAMETERS LIKE 'timezone'`** returned value `Asia/Shanghai` at level `SESSION`. The same command with `IN ACCOUNT` still showed `America/Los_Angeles`, with an empty level, meaning the account uses the default. Neither `CURRENT_TIMESTAMP` nor `SHOW` needed the warehouse.
+- **NTZ, LTZ and TZ:** see section 14. The session time zone changes how LTZ values display. NTZ values don't change.
+
+## 16. Challenge: a second file with a different shape
+`sql/13_load_updated_feed.sql` and `sql/14_filter_new_rows.sql`, as SYSADMIN.
+
+### 16.1 Finding the file
+`LIST @uni_kishore;` with no path lists the whole bucket:
+
+| name | size | last_modified |
+|---|---|---|
+| `s3://uni-kishore/kickoff/DNGW_Sample_from_Agnies_Game.json` | 52071 | Sun, 4 Dec 2022 |
+| `s3://uni-kishore/updated_feed/DNGW_updated_feed_0_0_0.json` | 34910 | Sat, 25 Feb 2023 |
+
+The `_0_0_0` suffix is the naming pattern Snowflake uses when it unloads to files (`COPY INTO @stage`), so this feed was probably exported from another Snowflake account.
+
+### 16.2 Comparing the two files before loading
+I queried the new file through the stage with `FF_JSON_LOGS`:
+```sql
+SELECT OBJECT_KEYS($1)::string AS keys, COUNT(*)
+FROM @uni_kishore/updated_feed (file_format => 'ff_json_logs') GROUP BY 1;
+```
+It has 284 rows, all with the same key set:
+
+| | kickoff (250 rows) | updated_feed (284 rows) |
+|---|---|---|
+| `agent` | yes | **removed** |
+| `ip_address` | no | **added**. VARCHAR, all 284 parse with `PARSE_IP(..., 'INET', 1)` |
+| `user_event`, `user_login` | yes | yes. Logins now include non-ASCII names such as `Woźniak31`, which load fine as UTF-8 |
+| `datetime_iso8601` | `2022-10-13T01:24:53Z` | `2022-10-14 22:28:58.000` |
+| Date range | 10 to 13 Oct 2022 | 14 to 16 Oct 2022 |
+
+**The timestamp format changed too.** The lab doesn't mention this. The new values have a space instead of `T`, add milliseconds, and **have no `Z`**. They no longer say which time zone they're in. They still parse: `TRY_TO_TIMESTAMP_NTZ` found no failures, because `AUTO` detection handles both layouts. But the `LOGS` column now mixes values known to be UTC with values of unknown zone. The ranges don't overlap and the new file starts right after the old one ends, which fits UTC. That's only consistent with UTC, not proof. Ask the data's owner before relying on it. In real work this belongs in a data contract with the source.
+
+### 16.3 Does GAME_LOGS need to change?
+**No.** `GAME_LOGS` has one `VARIANT` column, and the JSON keys live inside each value. A new or missing key changes nothing at the table level. This is "schema on read": the structure is applied when you query, not when you load.
+
+A change would be needed if the table had typed columns, for example `AGENT VARCHAR, ...` loaded with `MATCH_BY_COLUMN_NAME`. Then you would need `ALTER TABLE game_logs ADD COLUMN ip_address VARCHAR;`, and the old rows would get NULL there. Table schema evolution (`ENABLE_SCHEMA_EVOLUTION = TRUE`) can add such columns automatically during COPY.
+
+### 16.4 The load
+Only the `FROM` path changed from section 13:
+```sql
+COPY INTO AGS_GAME_AUDIENCE.RAW.GAME_LOGS
+FROM @uni_kishore/updated_feed
+FILE_FORMAT = (FORMAT_NAME = ff_json_logs)
+ON_ERROR = ABORT_STATEMENT;
+```
+- **Dry run first:** `VALIDATION_MODE = RETURN_ERRORS` returned no rows.
+- **Load:** `status LOADED, rows_parsed 284, rows_loaded 284, errors_seen 0`.
+- **Count:** `GAME_LOGS` now has **534** rows (250 + 284), the lab's quiz answer. The old rows were never touched, because COPY only appends.
+- **Rerun:** "Copy executed with 0 files processed.", still 534.
+- **Wider path:** `FROM @uni_kishore` with no folder would also work, because load metadata would skip the kickoff file it already loaded. But that relies on the 64-day metadata window. The explicit folder states what is meant.
+
+### 16.5 How the new rows look
+- **In `GAME_LOGS`:** each new `RAW_LOG` has `ip_address` and no `agent`.
+- **In the `LOGS` view:** the view still works, because missing keys don't cause errors. But it is now incomplete:
+  - The 284 new rows show **`AGENT` as NULL**.
+  - **`ip_address` isn't in the view at all**, because the view only extracts the keys it names.
+  - `DATETIME_ISO8601` holds both layouts as one `TIMESTAMP_NTZ`. Kickoff rows run from 2022-10-10 00:04:02 to 10-13 23:32:56, and new rows from 10-14 22:10:30 to 10-16 03:38:45.
+
+  The view needs updating before the new field is usable. That isn't done yet.
+
+### 16.6 Filtering to the new rows
+```sql
+SELECT raw_log:ip_address::text AS ip_address, raw_log:user_event::text AS user_event,
+       raw_log:user_login::text AS user_login,
+       raw_log:datetime_iso8601::timestamp_ntz AS datetime_iso8601, raw_log
+FROM AGS_GAME_AUDIENCE.RAW.GAME_LOGS
+WHERE raw_log:agent IS NULL           -- removed field
+  AND raw_log:ip_address IS NOT NULL; -- added field
+```
+Result: 284 rows. Either condition alone gives the same rows. A cross-tab by key confirms it: `has_agent=true, has_ip=false` is 250 rows and `has_agent=false, has_ip=true` is 284. No row has both keys or neither.
+
+- **Missing key vs JSON `null`:** `raw_log:agent` on a row without the key returns **SQL NULL**, so `IS NULL` works. A key that is present with the JSON value `null` returns a VARIANT null instead. `IS NULL` is false for that, and `IS_NULL_VALUE()` is true. Here `IS NULL` counted 284 and `IS_NULL_VALUE` counted 0, so the key is missing, not null.
+- **Which test is stronger?** `ip_address IS NOT NULL` tests for something the new file has. `agent IS NULL` would also match any future file without `agent`, or a kickoff row with a missing value. Using both makes the filter exact for these two files.
+- **More reliable later:** record the source file during the load with `COPY INTO ... FROM (SELECT $1, METADATA$FILENAME FROM @stage)`. Then you filter by file and don't depend on the shape.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -485,7 +578,10 @@ snow sql -f projects/$P/sql/08_ags_verify.sql
 snow sql -f projects/$P/sql/09_explore_kickoff.sql
 snow sql -f projects/$P/sql/10_load_game_logs.sql
 snow sql -f projects/$P/sql/11_logs_view.sql
+snow sql -f projects/$P/sql/12_time_zones.sql
+snow sql -f projects/$P/sql/13_load_updated_feed.sql
+snow sql -f projects/$P/sql/14_filter_new_rows.sql
 ```
 
 ## Next
-The DORA check for the LOGS view, then the next lab steps.
+Update the `LOGS` view for `ip_address` and the missing `agent` (16.5). Confirm the time zone of the new timestamps (16.2).
