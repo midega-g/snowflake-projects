@@ -1,0 +1,2 @@
+USE ROLE USERADMIN;
+DROP ROLE IF EXISTS <% role_name %>;
