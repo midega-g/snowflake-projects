@@ -1,0 +1,20 @@
+# secrets / local config - never commit
+.env
+.env.*
+!.env.example
+*.p8
+*.pem
+.snowflake/
+**/profiles.yml
+!**/profiles.yml.example
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+# misc
+.venv/
+.DS_Store
+
+# credential scratch files
+*.txt
