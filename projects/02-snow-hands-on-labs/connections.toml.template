@@ -1,0 +1,8 @@
+# Rendered by scripts/use-project.sh into $SNOWFLAKE_HOME/connections.toml (gitignored, chmod 600)
+[${PROJECT_CONN}]
+account = "${SNOWFLAKE_ACCOUNT}"
+user = "${SNOWFLAKE_USER}"
+authenticator = "SNOWFLAKE_JWT"
+private_key_file = "${SNOWFLAKE_PRIVATE_KEY_FILE}"
+role = "${SNOWFLAKE_ROLE}"
+session_parameters = { QUERY_TAG = '{"project":"${PROJECT_NAME}","env":"${PROJECT_ENV}","tool":"snow","owner":"${PROJECT_OWNER}"}' }
