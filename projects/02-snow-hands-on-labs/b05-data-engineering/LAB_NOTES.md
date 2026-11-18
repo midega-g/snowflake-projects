@@ -740,6 +740,73 @@ ORDER BY datetime_iso8601;
 - **The login is at 01:22 on Sunday, the UTC value.** No row exists at 19:22 on Saturday.
 - **Conclusion: the `updated_feed` timestamps are UTC**, even though they no longer carry a `Z`. They are not in the user's local time (LTZ). This settles the question from section 16.2. Both files are UTC, so `TIMESTAMP_NTZ` in the view holds UTC wall-clock times throughout.
 
+## 19. Time zones from IP addresses
+The feed has UTC times but no local time zone, and the source can't add one yet. The `ip_address` column can fill the gap: an IP address can be **geolocated**, and the location gives a time zone. Adding a time zone to each row is the first **transformation** of the logs. It **enhances** (enriches) the raw data with information the source didn't send.
+
+**Caveat:** a VPN or proxy shows the address of its exit server, not the user's. Those rows get the wrong zone. An approximate zone for most rows is still better than none.
+
+**Ways to geolocate:**
+
+| Option | How it works | Drawbacks |
+|---|---|---|
+| Lookup API | Call a web service per address | Usually a fee per lookup, often a contract up front. Calls leave Snowflake |
+| Downloadable database | Load a file of IP ranges into a table | Often country only, so a second mapping from country to time zone is needed. Countries with several zones stay ambiguous |
+| [Snowflake Marketplace](https://app.snowflake.com/marketplace) share | A provider shares tables that appear as a read-only database in your account | Free samples are partial. Full coverage is a paid listing |
+
+A Marketplace share needs no file loads or API calls. The data stays with the provider and is queried in place, and updates arrive without any work on your side. The next step uses the free IPinfo sample listing.
+
+### 19.1 `PARSE_IP`
+[`PARSE_IP(expr, type [, permissive])`](https://docs.snowflake.com/en/sql-reference/functions/parse_ip) splits an IPv4 or IPv6 string into its parts and returns an OBJECT.
+- **`type`** is `'INET'` for a single address, or `'CIDR'` for a network.
+- **`permissive`** (optional): `0`, the default, fails on a bad address. `1` returns an object with only an `error` field, which suits bulk checks such as the one in section 16.2.
+
+`sql/19_parse_ip.sql` uses the test user's address from section 18:
+```sql
+SELECT PARSE_IP('100.41.16.160', 'inet');
+```
+```json
+{
+  "family": 4,
+  "host": "100.41.16.160",
+  "ip_fields": [1680412832, 0, 0, 0],
+  "ip_type": "inet",
+  "ipv4": 1680412832,
+  "netmask_prefix_length": null,
+  "snowflake$type": "ip_address"
+}
+```
+| Key | Meaning |
+|---|---|
+| `family` | `4` for IPv4, `6` for IPv6 |
+| `host` | The address as text |
+| `ip_fields` | The address as four 32-bit numbers. IPv4 fills only the first. IPv6 (128 bits) uses all four |
+| `ip_type` | The `type` argument: `inet` or `cidr` |
+| `ipv4` | The address as **one integer** |
+| `netmask_prefix_length` | The `/n` of a network. `null` for a single address |
+| `snowflake$type` | Always `ip_address`. Marks the object as `PARSE_IP` output |
+
+IPv6 input returns `hex_ipv6` instead of `ipv4`.
+
+### 19.2 Pulling out one field
+The result is an OBJECT, so the `:` path syntax from section 14 works directly after the function call:
+```sql
+SELECT PARSE_IP('100.41.16.160', 'inet'):host::text  AS host,     -- 100.41.16.160
+       PARSE_IP('100.41.16.160', 'inet'):family::int AS family,   -- 4
+       PARSE_IP('100.41.16.160', 'inet'):ipv4::int   AS ipv4;     -- 1680412832
+```
+**Why `ipv4` as an integer:** an IPv4 address is a 32-bit number. The dotted form writes its four bytes in base 10. Each byte is a digit in base 256:
+
+`100·256³ + 41·256² + 16·256 + 160 = 1,680,412,832`
+
+The query in the script gave the same value. As text, addresses compare badly: `'100.41.16.160' < '9.0.0.0'`, because the comparison goes character by character. As integers they sort in network order, and a range test is a plain `BETWEEN`.
+
+**Networks give a range.** With a `/n` suffix, `PARSE_IP` also returns where the network starts and ends:
+```sql
+SELECT PARSE_IP('100.41.16.0/24', 'inet');
+-- "ipv4_range_start": 1680412672, "ipv4_range_end": 1680412927, "netmask_prefix_length": 24
+```
+`/24` means the first 24 bits are fixed and the last 8 vary, so the network holds 256 addresses: 1680412672 to 1680412927. Geolocation tables store rows like this, one range per location. Looking up an address then means finding the range where `ipv4 BETWEEN range_start AND range_end`.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -761,6 +828,7 @@ snow sql -f projects/$P/sql/15_missing_key_vs_json_null.sql
 snow sql -f projects/$P/sql/16_copy_with_file_metadata.sql
 snow sql -f projects/$P/sql/17_update_logs_view.sql
 snow sql -f projects/$P/sql/18_find_test_records.sql
+snow sql -f projects/$P/sql/19_parse_ip.sql
 ```
 
 ## Next
