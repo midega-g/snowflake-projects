@@ -821,7 +821,26 @@ Getting a listing needs ACCOUNTADMIN, or a role with the `IMPORT SHARE` privileg
 - **Database name:** `IPINFO_GEOLOC`.
 - **Roles that can access it, besides ACCOUNTADMIN:** `SYSADMIN`. The database then shows the grant `USAGE` to SYSADMIN.
 
-**SQL route.** [`CREATE DATABASE ... FROM LISTING '<global_name>'`](https://docs.snowflake.com/en/sql-reference/sql/create-database) does the same, with `GRANT IMPORTED PRIVILEGES ON DATABASE ... TO ROLE SYSADMIN` for the role access. `SHOW AVAILABLE LISTINGS` and `DESCRIBE AVAILABLE LISTING` give the global name and whether the listing can be imported in your region. Two limits apply:
+**Finding the listing's global name.** Every listing has a **global name**, a short ID such as `GZSTZ3VDMEH` that SQL uses in place of the title. Two places show it:
+- **Snowsight:** the listing page URL ends in it: `app.snowflake.com/marketplace/listing/GZSTZ3VDMEH`.
+- **SQL:** [`SHOW AVAILABLE LISTINGS`](https://docs.snowflake.com/en/sql-reference/sql/show-available-listings) lists every listing visible to the account (4,430 here). The command has no `LIKE` filter in its syntax. `LIKE '%IPinfo%'` was accepted but ignored, and still returned all 4,430 rows. `IS_IMPORTED = TRUE` narrows the list to listings already got. To search by title, filter the SHOW output with the [pipe operator `->>`](https://docs.snowflake.com/en/sql-reference/operators-flow). `$1` refers to the previous statement's result, and SHOW output columns are lowercase, so they need double quotes:
+
+```sql
+SHOW AVAILABLE LISTINGS
+  ->> SELECT "global_name", "title", "is_monetized", "is_ready_for_import"
+      FROM $1 WHERE "title" ILIKE '%ipinfo%' ORDER BY "title";
+```
+| global_name | title | is_monetized | is_ready_for_import |
+|---|---|---|---|
+| GZSTZSHKQ56D | IPinfo Core | true | true |
+| GZSTZ3VDMG3 | IPinfo Custom | false | false |
+| GZSTZSHKQ55S | IPinfo Lite | false | true |
+| GZSTZSHKQ56H | IPinfo Plus | true | true |
+| GZSTZ3VDMEH | IPinfo: IP Geolocation Training/Education Sample | false | true |
+
+`is_monetized = false` means free, and `is_ready_for_import = true` means the data is available in this account's region. The training sample is `GZSTZ3VDMEH`. [`DESCRIBE AVAILABLE LISTING GZSTZ3VDMEH`](https://docs.snowflake.com/en/sql-reference/sql/desc-available-listing) then shows its details, including `listing_terms` (`STANDARD` here) and usage examples such as `SELECT * FROM demo.location LIMIT 10`.
+
+**SQL route.** [`CREATE DATABASE ... FROM LISTING '<global_name>'`](https://docs.snowflake.com/en/sql-reference/sql/create-database) does the same as Get, with `GRANT IMPORTED PRIVILEGES ON DATABASE ... TO ROLE SYSADMIN` for the role access. Two limits apply:
 - The listing must be free.
 - If its terms are of type `STANDARD`, they must first be accepted once in Snowsight. Before that, the CREATE fails with "the terms for the associated listing ... have not been accepted."
 

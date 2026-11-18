@@ -4,6 +4,14 @@
 -- before CREATE DATABASE ... FROM LISTING can run. Getting it in Snowsight
 -- with SYSADMIN added does the same as the CREATE and GRANT below.
 USE ROLE ACCOUNTADMIN;
+
+-- Find the global name. SHOW AVAILABLE LISTINGS has no LIKE filter (it is
+-- ignored), so filter the output by title with the pipe operator.
+SHOW AVAILABLE LISTINGS
+  ->> SELECT "global_name", "title", "is_monetized", "is_ready_for_import"
+      FROM $1 WHERE "title" ILIKE '%ipinfo%' ORDER BY "title";
+DESCRIBE AVAILABLE LISTING GZSTZ3VDMEH;   -- listing_terms: STANDARD
+
 CREATE DATABASE IF NOT EXISTS IPINFO_GEOLOC FROM LISTING 'GZSTZ3VDMEH';
 GRANT IMPORTED PRIVILEGES ON DATABASE IPINFO_GEOLOC TO ROLE SYSADMIN;
 
