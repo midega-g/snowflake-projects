@@ -870,6 +870,176 @@ The provider's views are **secure views**. Their definitions are hidden from con
 
 The integer columns are the range layout from section 19.2. `PUBLIC.TO_INT` converts an address to that integer: `TO_INT('100.41.16.160')` returns `1680412832`, the same value `PARSE_IP(...):ipv4` gave.
 
+## 21. Joining the logs to the locations
+### 21.1 One address
+Each `LOCATION` row covers a range of addresses, so the lookup is a range test, not an equality. `sql/22_ip_location_join.sql` starts with the test user's address:
+```sql
+SELECT start_ip, end_ip, start_ip_int, end_ip_int, city, region, country, timezone
+FROM IPINFO_GEOLOC.DEMO.LOCATION
+WHERE PARSE_IP('100.41.16.160', 'inet'):ipv4 BETWEEN start_ip_int AND end_ip_int;
+```
+| start_ip | end_ip | start_ip_int | end_ip_int | city | region | country | timezone |
+|---|---|---|---|---|---|---|---|
+| 100.41.16.156 | 100.41.16.161 | 1680412828 | 1680412833 | Denver | Colorado | US | America/Denver |
+
+The address's integer `1680412832` falls inside the range `1680412828` to `1680412833`. `America/Denver` is UTC-6 in October (daylight time), which agrees with the UTC-6 offset from section 18.
+
+### 21.2 Every row, range test only
+```sql
+SELECT logs.*, loc.city, loc.region, loc.country, loc.timezone
+FROM AGS_GAME_AUDIENCE.RAW.LOGS logs
+JOIN IPINFO_GEOLOC.DEMO.LOCATION loc
+WHERE PARSE_IP(logs.ip_address, 'inet'):ipv4 BETWEEN start_ip_int AND end_ip_int;
+```
+This `JOIN` has no `ON` clause. Snowflake treats it as a **cross join** (every log row paired with every location row) and then applies the `WHERE` as a filter.
+
+**It returned 82 of the 284 rows.** A join only keeps rows that match, and the free sample doesn't list every address: the 284 log rows use 142 distinct IPs, and most aren't in it. IP ranges are also reassigned over time, so the matched count can change as the provider updates the share. To keep unmatched rows with empty location columns, a `LEFT JOIN` would be needed.
+
+### 21.3 Reading the query profile
+Data from the share is free, but the warehouse time to query it is paid for in credits. A query that runs often needs to be cheap, and the **[query profile](https://docs.snowflake.com/en/user-guide/ui-query-profile)** shows where the time goes. In Snowsight, open it from the results pane, or later from **Monitoring > Query History**, select the query and the **Query Profile** tab. The profile is a tree of **operators** (scan, filter, join, aggregate), each with its row counts and share of the run time.
+
+The same numbers are available in SQL through [`GET_QUERY_OPERATOR_STATS(<query_id>)`](https://docs.snowflake.com/en/sql-reference/functions/get_query_operator_stats), with `LAST_QUERY_ID()` giving the id of the previous statement. For the query above:
+
+| Operator | Output rows | Share of time |
+|---|---|---|
+| TableScan (`GAME_LOGS`) | 284 | 3% |
+| SecureView (`LOCATION`) | 274,910 | 57% |
+| CartesianJoin | 82 | 38% |
+
+A **CartesianJoin** is the warning sign. It compared each of the 284 log rows with each of the 274,910 ranges, about 78 million `BETWEEN` tests, to keep 82 rows. The cost grows with the product of the two row counts.
+
+**Caching changes the profile.** Running the same query again usually returns the [result cache](https://docs.snowflake.com/en/user-guide/querying-persisted-results) from the first run, so the second profile shows almost no work. To compare queries fairly, turn it off for the session with `ALTER SESSION SET USE_CACHED_RESULT = FALSE`.
+
+### 21.4 A faster lookup with the provider's functions
+The share includes two functions for this join (in `IPINFO_GEOLOC.PUBLIC`):
+- **`TO_INT(ip)`** converts an address to the integer used by the range columns, like `PARSE_IP(...):ipv4`.
+- **`TO_JOIN_KEY(ip)`** returns the address's **join key**: the first address of its `/16` network (`a.b.0.0`) as an integer. `TO_JOIN_KEY('100.41.16.160')` returns `1680408576`, the same as `PARSE_IP('100.41.0.0/16','inet'):ipv4_range_start`. Each `LOCATION` row stores this key in `JOIN_KEY` (8,744 distinct values).
+
+```sql
+SELECT logs.ip_address, logs.user_login, logs.user_event, logs.datetime_iso8601,
+       city, region, country, timezone
+FROM AGS_GAME_AUDIENCE.RAW.LOGS logs
+JOIN IPINFO_GEOLOC.DEMO.LOCATION loc
+  ON IPINFO_GEOLOC.PUBLIC.TO_JOIN_KEY(logs.ip_address) = loc.join_key
+ AND IPINFO_GEOLOC.PUBLIC.TO_INT(logs.ip_address) BETWEEN start_ip_int AND end_ip_int;
+```
+The equality on the key lets Snowflake use a **hash join**: it groups rows by key and only runs the `BETWEEN` on ranges in the same `/16` network as the address. The profile changes:
+
+| Operator | Output rows | Share of time |
+|---|---|---|
+| TableScan (`GAME_LOGS`) | 184 | 0% |
+| JoinFilter | 184 | 0% |
+| SecureView (`LOCATION`) | 274,910 | 98% |
+| Join | 82 | 0.5% |
+
+The CartesianJoin is replaced by a Join that takes 0.5% of the time. A **JoinFilter** also appears: during the run, Snowflake builds a filter from the keys present in the location data and drops 100 log rows that can't match before they reach the join. Both queries return the same 82 rows.
+
+At this size, the total elapsed time was about the same (2.4 s and 2.5 s), because reading the secure view dominates both. The difference is in how the join grows: the cross join's cost scales with log rows times ranges, while the keyed join scales with their sum. Over a growing log table, only the keyed join stays cheap.
+
+## 22. Enhancing the rows
+### 22.1 Local time
+Each row now has a UTC timestamp and an IANA time zone name, which is enough to compute the local time of the event. [`CONVERT_TIMEZONE`](https://docs.snowflake.com/en/sql-reference/functions/convert_timezone) has two forms:
+- **`CONVERT_TIMEZONE(target_tz, ts)`** takes a `TIMESTAMP_TZ` or `TIMESTAMP_LTZ`, which already carries an offset.
+- **`CONVERT_TIMEZONE(source_tz, target_tz, ts)`** takes a `TIMESTAMP_NTZ` and says which zone it is in.
+
+`DATETIME_ISO8601` is `TIMESTAMP_NTZ` holding UTC times (section 18), so the three-argument form is the one to use:
+```sql
+CONVERT_TIMEZONE('UTC', timezone, logs.datetime_iso8601) AS game_event_ltz
+```
+The result is a `TIMESTAMP_NTZ` with the local wall-clock time. The function applies daylight saving for the date, so one zone name gives the right offset all year.
+
+### 22.2 Day of the week
+[`DAYNAME`](https://docs.snowflake.com/en/sql-reference/functions/dayname) returns the three-letter day name (`Mon` to `Sun`). It has to use the local time: an event at 01:22 UTC on Sunday is still Saturday evening in Denver.
+```sql
+DAYNAME(game_event_ltz) AS dow_name
+```
+Snowflake lets a later expression in the same `SELECT` refer to an alias defined earlier (a **lateral column alias**), so `game_event_ltz` doesn't need to be repeated.
+
+### 22.3 Time of day from a lookup table
+The team wanted named parts of the day instead of hours. They agreed on labels like "Early morning" and "Mid-morning", which work across cultures and age groups better than "Before breakfast" or "After school". A small **lookup table** maps each hour to a label. `sql/23_time_of_day_lu.sql` creates `AGS_GAME_AUDIENCE.RAW.TIME_OF_DAY_LU` (`hour NUMBER`, `tod_name VARCHAR(25)`) with 24 rows, one per hour. It uses `CREATE OR REPLACE TABLE`, so a rerun rebuilds the table instead of adding 24 more rows.
+
+To check it, [`LISTAGG`](https://docs.snowflake.com/en/sql-reference/functions/listagg) joins the hours in each group into one string. `WITHIN GROUP (ORDER BY hour)` sorts them inside the string:
+```sql
+SELECT tod_name, LISTAGG(hour, ',') WITHIN GROUP (ORDER BY hour) AS hours
+FROM AGS_GAME_AUDIENCE.RAW.TIME_OF_DAY_LU
+GROUP BY tod_name;
+```
+| tod_name | hours |
+|---|---|
+| Early morning | 6,7,8 |
+| Mid-morning | 9,10 |
+| Late morning | 11,12 |
+| Early afternoon | 13,14 |
+| Mid-afternoon | 15,16 |
+| Late afternoon | 17,18 |
+| Early evening | 19,20 |
+| Late evening | 21,22,23 |
+| Late at night | 0,1,2 |
+| Toward morning | 3,4,5 |
+
+Ten labels cover all 24 hours once each.
+
+**Joining on a function.** The log rows have no hour column to join on, but [`HOUR`](https://docs.snowflake.com/en/sql-reference/functions/hour-minute-second) extracts it (0 to 23) from a timestamp. An `ON` clause can compare any expression, so the function goes straight into the join:
+```sql
+JOIN AGS_GAME_AUDIENCE.RAW.TIME_OF_DAY_LU tod
+  ON HOUR(game_event_ltz) = tod.hour
+```
+It must be the local hour. The UTC hour would label the test user's 19:22 login as "Late at night".
+
+## 23. Saving the result with CTAS
+### 23.1 Renamed columns
+Before saving, some columns get names that describe the game data rather than the log format. `AS` after an expression sets the output column name:
+
+| From | To |
+|---|---|
+| `logs.user_login` | `GAMER_NAME` |
+| `logs.user_event` | `GAME_EVENT_NAME` |
+| `logs.datetime_iso8601` | `GAME_EVENT_UTC` |
+| `timezone` | `GAMER_LTZ_NAME` |
+
+### 23.2 Create Table As Select
+The query now joins a view, a share and a lookup table. Wrapping it in another view would stack more logic on each read. **[CTAS](https://docs.snowflake.com/en/sql-reference/sql/create-table#create-table-as-select-also-referred-to-as-ctas)** (`CREATE TABLE ... AS SELECT`) runs the query once and stores the result as a table. The column names and types come from the `SELECT`. The table is a snapshot: it doesn't change when `LOGS` gets new rows. That makes it a stepping stone while the pipeline logic is worked out, not the final load process.
+
+The table lives in `ENHANCED`, since the data is no longer raw. `sql/24_logs_enhanced.sql`:
+```sql
+CREATE OR REPLACE TABLE AGS_GAME_AUDIENCE.ENHANCED.LOGS_ENHANCED AS (
+    SELECT logs.ip_address,
+           logs.user_login       AS gamer_name,
+           logs.user_event       AS game_event_name,
+           logs.datetime_iso8601 AS game_event_utc,
+           city,
+           region,
+           country,
+           timezone              AS gamer_ltz_name,
+           CONVERT_TIMEZONE('UTC', timezone, logs.datetime_iso8601) AS game_event_ltz,
+           DAYNAME(game_event_ltz) AS dow_name,
+           tod.tod_name
+    FROM AGS_GAME_AUDIENCE.RAW.LOGS logs
+    JOIN IPINFO_GEOLOC.DEMO.LOCATION loc
+      ON IPINFO_GEOLOC.PUBLIC.TO_JOIN_KEY(logs.ip_address) = loc.join_key
+     AND IPINFO_GEOLOC.PUBLIC.TO_INT(logs.ip_address) BETWEEN start_ip_int AND end_ip_int
+    JOIN AGS_GAME_AUDIENCE.RAW.TIME_OF_DAY_LU tod
+      ON HOUR(game_event_ltz) = tod.hour
+);
+```
+`OR REPLACE` is safe here because every row is derived from other objects, and a rerun rebuilds the same table.
+
+### 23.3 Checking the table
+**The test rows** confirm the conversion:
+
+| gamer_name | game_event_name | game_event_utc | gamer_ltz_name | game_event_ltz | dow_name | tod_name |
+|---|---|---|---|---|---|---|
+| princess_prajina | login | 2022-10-16 01:22:15 | America/Denver | 2022-10-15 19:22:15 | Sat | Early evening |
+| princess_prajina | logout | 2022-10-16 01:39:15 | America/Denver | 2022-10-15 19:39:15 | Sat | Early evening |
+
+The login shows 19:22 on Saturday, the known local time from section 18.
+
+**The rest of the table:**
+- **Rows:** 82, the same as the location join in section 21. Every hour has a label, so the time-of-day join drops nothing.
+- **Columns:** 11, with the new names. `GAME_EVENT_UTC` and `GAME_EVENT_LTZ` are `TIMESTAMP_NTZ`, and the rest are text. The `INFORMATION_SCHEMA.COLUMNS` view lists them in order.
+- **Location and owner:** `SHOW TABLES` shows `AGS_GAME_AUDIENCE.ENHANCED.LOGS_ENHANCED`, owned by SYSADMIN.
+- **Time zones:** `America/Denver` (54 rows), `Europe/Warsaw` (22), `America/Chicago` (4), `Africa/Nairobi` (2).
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -894,7 +1064,10 @@ snow sql -f projects/$P/sql/18_find_test_records.sql
 snow sql -f projects/$P/sql/19_parse_ip.sql
 snow sql -f projects/$P/sql/20_enhanced_schema.sql
 snow sql -f projects/$P/sql/21_ipinfo_listing.sql   # after the terms are accepted in Snowsight
+snow sql -f projects/$P/sql/22_ip_location_join.sql
+snow sql -f projects/$P/sql/23_time_of_day_lu.sql
+snow sql -f projects/$P/sql/24_logs_enhanced.sql
 ```
 
 ## Next
-Join `LOGS` to `IPINFO_GEOLOC.DEMO.LOCATION` on the IP range to add a time zone to each row.
+The remaining planned enhancement is session length: how long each login lasts, from its login and logout events.
