@@ -10,7 +10,7 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 | Database | `UTIL_DB` (home of the DORA grader function). `UTIL_DB` and `UTIL_DB.PUBLIC` are owned by SYSADMIN |
 | API integration | `DORA_API_INTEGRATION` (DORA step 1): AWS API Gateway, allowlist `https://awy6hshxy4.execute-api.us-west-2.amazonaws.com/dev/edu_dora`, owner ACCOUNTADMIN |
 | Grader function | `UTIL_DB.PUBLIC.GRADER` (DORA step 2): external function via `DORA_API_INTEGRATION`, owner ACCOUNTADMIN. Connection test passed 2026-11-18, which starts the 90-day DORA window |
-| Lab database | `AGS_GAME_AUDIENCE` (no `PUBLIC`), schema `RAW`: table `GAME_LOGS(RAW_LOG VARIANT)`, external stage `UNI_KISHORE` (`s3://uni-kishore`, directory table on), file format `FF_JSON_LOGS` (JSON, strip outer array). All owned by SYSADMIN |
+| Lab database | `AGS_GAME_AUDIENCE` (no `PUBLIC`), schema `RAW`: table `GAME_LOGS(RAW_LOG VARIANT)`, external stage `UNI_KISHORE` (`s3://uni-kishore`, directory table on), file format `FF_JSON_LOGS` (JSON, strip outer array), view `LOGS` (4 typed columns plus `RAW_LOG`). `GAME_LOGS` holds the 250 kickoff rows. All owned by SYSADMIN |
 | User defaults | role `SYSADMIN`, warehouse `COMPUTE_WH`, namespace `UTIL_DB.PUBLIC` |
 | Query tag | `{"project":"snow-hol-b05-data-engineering","env":"dev","tool":"snow","owner":"midega-g"}` |
 
@@ -24,6 +24,10 @@ Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and r
 - `sql/06_dora_test.sql`: DORA step 3, the connection test. Uses `COMPUTE_WH` and sends data to DORA.
 - `sql/07_ags_game_audience.sql`: lab database, schema, table, stage and file format (SYSADMIN). Idempotent.
 - `sql/08_ags_verify.sql`: SHOW checks and `LIST @uni_kishore/kickoff`.
+- `sql/09_explore_kickoff.sql`: queries the staged file, plus a `VALIDATION_MODE` dry run.
+- `sql/10_load_game_logs.sql`: COPY INTO `GAME_LOGS`. Safe to rerun (load metadata).
+- `sql/11_logs_view.sql`: the `LOGS` view.
+- `data/`: local copies of lab data, gitignored.
 
 ## Run it
 ```bash
@@ -37,4 +41,7 @@ snow sql -f projects/$P/sql/05_dora_grader.sql
 snow sql -f projects/$P/sql/06_dora_test.sql
 snow sql -f projects/$P/sql/07_ags_game_audience.sql
 snow sql -f projects/$P/sql/08_ags_verify.sql
+snow sql -f projects/$P/sql/09_explore_kickoff.sql
+snow sql -f projects/$P/sql/10_load_game_logs.sql
+snow sql -f projects/$P/sql/11_logs_view.sql
 ```

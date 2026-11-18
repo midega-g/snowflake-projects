@@ -1,0 +1,2 @@
+# Local copies of lab data. Not committed: the 2.5 MB sample is over the 500 KB large-file hook limit.
+*.json

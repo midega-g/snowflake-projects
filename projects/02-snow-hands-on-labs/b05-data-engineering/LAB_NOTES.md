@@ -375,6 +375,102 @@ CREATE FILE FORMAT IF NOT EXISTS AGS_GAME_AUDIENCE.RAW.FF_JSON_LOGS
 ### 11.6 Rerun
 A second run of `07` reported "already exists" for each object, and "PUBLIC already dropped" for the drop. `sql/08_ags_verify.sql` repeats the `SHOW` and `LIST` checks.
 
+## 12. Exploring the staged file before loading
+`sql/09_explore_kickoff.sql`, as SYSADMIN. Querying a stage reads the file, so `COMPUTE_WH` auto-resumes.
+
+```sql
+SELECT $1 FROM @uni_kishore/kickoff LIMIT 3;                                  -- no file format
+SELECT $1 FROM @uni_kishore/kickoff (file_format => 'ff_json_logs') LIMIT 5;  -- with it
+```
+- **Without a file format** the stage falls back to CSV, so each line is cut at the first comma: `[{"user_login":"atamlett0"`. That's useless, but it shows the stage works.
+- **With `FF_JSON_LOGS`** each row is one whole JSON object, because `STRIP_OUTER_ARRAY` split the file's outer `[...]`.
+- **Shape check before loading:** `COUNT(*)` gave 250 rows. `COUNT(DISTINCT OBJECT_KEYS($1)::string)` gave 1, so every record has the same keys: `agent`, `datetime_iso8601`, `user_event`, `user_login`.
+
+### 12.1 Why `=>` here and `=` in COPY
+- **`@stage (file_format => ...)`:** in a `FROM` clause, a stage is read like a table function, and its arguments use named-argument syntax `name => value`. `FLATTEN(input => ...)` uses the same syntax. A bare `=` would be read as a comparison. The value must be the **name** of an existing file format, quoted or not. You can't write options inline here. The only other argument is `pattern => '<regex>'`.
+- **`COPY INTO ... FILE_FORMAT = (...)`:** `FILE_FORMAT` is a statement parameter, like `TYPE = JSON` in `CREATE FILE FORMAT`. Statement parameters use `=`. The brackets hold either `FORMAT_NAME = ff_json_logs` or inline options such as `TYPE = JSON STRIP_OUTER_ARRAY = TRUE`.
+
+### 12.2 Checking for bad data before loading
+- **`ON_ERROR` is a COPY option**, not a file format option, and a stage `SELECT` doesn't accept it. A `SELECT` from a stage simply fails on a file it can't parse.
+- **The file format does hold the parse-level choices:** `IGNORE_UTF8_ERRORS`, `REPLACE_INVALID_CHARACTERS`, and for CSV `ERROR_ON_COLUMN_COUNT_MISMATCH`. These decide what counts as an error. `ON_ERROR` decides what COPY does about one.
+- **There are four ways to check before or after a load:**
+  1. **`VALIDATION_MODE` on the COPY itself, a dry run that loads nothing:**
+     ```sql
+     COPY INTO AGS_GAME_AUDIENCE.RAW.GAME_LOGS FROM @uni_kishore/kickoff
+     FILE_FORMAT = (FORMAT_NAME = ff_json_logs)
+     VALIDATION_MODE = RETURN_ERRORS;   -- or RETURN_ALL_ERRORS, or RETURN_10_ROWS
+     ```
+     It returned no rows, which means no errors. It won't work with a COPY that transforms data (`FROM (SELECT ...)`), nor with `MATCH_BY_COLUMN_NAME`.
+  2. **A stage `SELECT` with `TRY_` casts**, for values that parse as JSON but are wrong for their purpose. COPY into a VARIANT column only checks that the JSON is valid. `COUNT_IF(TRY_TO_TIMESTAMP_NTZ($1:datetime_iso8601::text) IS NULL)` checks the dates.
+  3. **`ON_ERROR` at load time**, to set what happens on a bad row. **For "load only correct data", keep `ABORT_STATEMENT`:** COPY is one transaction, so one bad row means nothing loads.
+  4. **`SELECT * FROM TABLE(VALIDATE(game_logs, job_id => '_last'))` afterwards**, which lists the rows a previous COPY rejected. It's only useful with `CONTINUE` or `SKIP_FILE_*`.
+
+| `ON_ERROR` | On a bad row | Default for |
+|---|---|---|
+| `ABORT_STATEMENT` | Stop, load nothing | Bulk COPY |
+| `CONTINUE` | Skip the row, load the rest | |
+| `SKIP_FILE` | Skip the whole file. Slower, because it buffers every file | Snowpipe |
+| `SKIP_FILE_10` / `'SKIP_FILE_10%'` | Skip the file once it has 10 bad rows, or more than 10% bad | |
+
+## 13. Loading the file
+`sql/10_load_game_logs.sql`:
+```sql
+COPY INTO AGS_GAME_AUDIENCE.RAW.GAME_LOGS
+FROM @uni_kishore/kickoff
+FILE_FORMAT = (FORMAT_NAME = ff_json_logs)
+ON_ERROR = ABORT_STATEMENT;
+```
+Result: `status LOADED, rows_parsed 250, rows_loaded 250, errors_seen 0`, and `GAME_LOGS` has 250 rows. `ON_ERROR` is the default, but writing it out records the intent.
+
+**A rerun returned "Copy executed with 0 files processed."** and the count stayed 250. COPY keeps **load metadata** per table: the files it has loaded and their checksums, kept for 64 days. It skips those files, so a rerun doesn't duplicate rows.
+
+### 13.1 Choosing which files COPY loads
+With no file named, COPY loads every file under the `FROM` path that it hasn't loaded yet. Other options:
+
+| Option | What it does | Example |
+|---|---|---|
+| Path in `FROM` | Prefix filter. Only files under it | `FROM @uni_kishore/kickoff` |
+| `FILES = (...)` | Exact names relative to the `FROM` path, up to 1000. A missing file aborts under `ABORT_STATEMENT` | `FILES = ('DNGW_Sample_from_Agnies_Game.json')` |
+| `PATTERN = '<regex>'` | Regex. Bulk COPY matches it against the full path, so start it with `.*` | `PATTERN = '.*kickoff/.*[.]json'` |
+| `FORCE = TRUE` | Ignores load metadata and reloads everything. **Creates duplicates** | |
+| `LOAD_UNCERTAIN_FILES = TRUE` | Also loads files whose status is unknown: staged, and last loaded, more than 64 days ago | |
+| `SIZE_LIMIT = <bytes>` | Stops starting new files once this much data is loaded | |
+| `PURGE = TRUE` | Deletes files after a successful load. It needs delete rights on the bucket and fails silently without them, so it's no use on this public bucket | |
+| `FROM (SELECT ... FROM @stage)` | Transforms during the load: reorders or casts columns, adds `METADATA$FILENAME` | |
+
+Don't use `FILES` and `PATTERN` together, because then only `FILES` applies.
+
+## 14. One column per attribute: the LOGS view
+`sql/11_logs_view.sql`, as SYSADMIN:
+```sql
+CREATE OR REPLACE VIEW AGS_GAME_AUDIENCE.RAW.LOGS AS (
+  SELECT
+      raw_log:agent::text                       AS agent
+    , raw_log:user_event::text                  AS user_event
+    , raw_log:user_login::text                  AS user_login
+    , raw_log:datetime_iso8601::timestamp_ntz   AS datetime_iso8601
+    , raw_log
+  FROM AGS_GAME_AUDIENCE.RAW.GAME_LOGS
+);
+```
+- **Path syntax:** `raw_log:agent` reads the `agent` key from the VARIANT column, giving another VARIANT. Nested keys chain with `.`, as in `col:a.b`, and arrays index with `[0]`. Keys are case-sensitive, column names are not.
+- **Casts:** `::text` turns the VARIANT string into VARCHAR. Without the cast, the value stays VARIANT and prints in JSON quotes (`"login"`).
+- **Why `TIMESTAMP_NTZ`:** the values look like `2022-10-13T01:24:53Z`. That's ISO 8601, and the trailing `Z` (Zulu) means UTC, offset +00:00. All 250 values end in `Z`, and all parse (`TRY_TO_TIMESTAMP_NTZ` found no NULLs). This session's `TIMEZONE` is `America/Los_Angeles`. The same literal cast three ways gave:
+
+  | Cast | Result |
+  |---|---|
+  | `::timestamp_ntz` | `2022-10-13 01:24:53.000` |
+  | `::timestamp_ltz` | `2022-10-12 18:24:53.000 -0700` |
+  | `::timestamp_tz` | `2022-10-13 01:24:53.000 Z` |
+
+  NTZ ("no time zone") keeps the wall-clock time as written and stores no zone. Every source value is UTC, so the stored times are UTC times, and the column's meaning is "UTC" by convention. LTZ would show each time in the session's zone, so the result would depend on who runs the query.
+- **Order:** `RAW_LOG` comes last and stays in the view, so every row can be traced back to its original JSON.
+
+**Checks:** `SELECT COUNT(*) FROM LOGS` returned 250. `DESC VIEW` showed `AGENT`, `USER_EVENT` and `USER_LOGIN` as `VARCHAR(16777216)`, `DATETIME_ISO8601` as `TIMESTAMP_NTZ(9)`, and `RAW_LOG` as `VARIANT`. The owner is SYSADMIN. A view stores only the query and no data, so each `SELECT` on it reads `GAME_LOGS` and uses the warehouse.
+
+### 14.1 The local sample is a different file
+The downloaded `DNGW_Sample_from_Agnies_Game.json` has the same name as the staged file but different contents: 2.5 MB, 10,000 records, and a fifth key `game_subscription_type`. The staged file is 52,071 bytes with 250 records and 4 keys. Everything above uses the staged file. The local copy sits in `data/`, which is gitignored because it's over the 500 KB large-file hook.
+
 ## Run order
 ```bash
 P=02-snow-hands-on-labs/b05-data-engineering
@@ -386,7 +482,10 @@ snow sql -f projects/$P/sql/05_dora_grader.sql
 snow sql -f projects/$P/sql/06_dora_test.sql
 snow sql -f projects/$P/sql/07_ags_game_audience.sql
 snow sql -f projects/$P/sql/08_ags_verify.sql
+snow sql -f projects/$P/sql/09_explore_kickoff.sql
+snow sql -f projects/$P/sql/10_load_game_logs.sql
+snow sql -f projects/$P/sql/11_logs_view.sql
 ```
 
 ## Next
-Load the kickoff file into `GAME_LOGS` with `FF_JSON_LOGS` and check it with DORA.
+The DORA check for the LOGS view, then the next lab steps.
