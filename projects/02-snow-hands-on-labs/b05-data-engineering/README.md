@@ -1,0 +1,35 @@
+# 02-snow-hands-on-labs / b05 - Data Engineering
+
+Badge 5. Shared setup and lab exceptions: `../README.md`. Commands, errors and reasoning: `LAB_NOTES.md`.
+
+## Setup state
+| Item | State |
+|---|---|
+| Warehouse | `COMPUTE_WH`: XSMALL, `AUTO_SUSPEND=60`, `AUTO_RESUME`, starts suspended, owner SYSADMIN |
+| Resource monitor | `COMPUTE_WH_RM`: 15 credits/week, notify 75%, suspend 100%, suspend immediately 110%. Owner ACCOUNTADMIN |
+| Database | `UTIL_DB` (home of the DORA grader function). `UTIL_DB` and `UTIL_DB.PUBLIC` are owned by SYSADMIN |
+| API integration | `DORA_API_INTEGRATION` (DORA step 1): AWS API Gateway, allowlist `https://awy6hshxy4.execute-api.us-west-2.amazonaws.com/dev/edu_dora`, owner ACCOUNTADMIN |
+| Grader function | `UTIL_DB.PUBLIC.GRADER` (DORA step 2): external function via `DORA_API_INTEGRATION`, owner ACCOUNTADMIN. Connection test passed 2026-11-18, which starts the 90-day DORA window |
+| User defaults | role `SYSADMIN`, warehouse `COMPUTE_WH`, namespace `UTIL_DB.PUBLIC` |
+| Query tag | `{"project":"snow-hol-b05-data-engineering","env":"dev","tool":"snow","owner":"midega-g"}` |
+
+## Files
+- `badge.env`: badge name and connection name, layered on the shared `../.env`.
+- `sql/01_session.sql`: worksheet header (query tag and a context check).
+- `sql/02_setup.sql`: creates or enforces everything above. Idempotent.
+- `sql/03_verify.sql`: shows the objects, owners, monitor and user defaults.
+- `sql/04_dora_api_integration.sql`: DORA step 1, the API integration (ACCOUNTADMIN). Idempotent.
+- `sql/05_dora_grader.sql`: DORA step 2, the grader external function (ACCOUNTADMIN). Safe to rerun.
+- `sql/06_dora_test.sql`: DORA step 3, the connection test. Uses `COMPUTE_WH` and sends data to DORA.
+
+## Run it
+```bash
+P=02-snow-hands-on-labs/b05-data-engineering
+source scripts/use-project.sh $P
+snow connection test
+snow sql -f projects/$P/sql/02_setup.sql
+snow sql -f projects/$P/sql/03_verify.sql
+snow sql -f projects/$P/sql/04_dora_api_integration.sql
+snow sql -f projects/$P/sql/05_dora_grader.sql
+snow sql -f projects/$P/sql/06_dora_test.sql
+```
