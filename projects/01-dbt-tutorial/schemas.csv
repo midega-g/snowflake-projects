@@ -1,0 +1,6 @@
+# name,transient(Y/N),managed_access(Y/N)
+RAW,N,N
+STAGING,N,N
+MARTS,N,N
+GOVERNANCE,N,N
+# SCRATCH,Y,N

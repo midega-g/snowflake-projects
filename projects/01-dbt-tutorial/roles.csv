@@ -1,0 +1,8 @@
+# suffix,granted_to,db_access,wh_access
+# granted_to: another suffix in this file, or a system role (SYSADMIN). Child role is granted TO the parent.
+# db_access : OWNER | READWRITE | READ | NONE        wh_access: NONE | USAGE | USAGE+OPERATE
+ADMIN,SYSADMIN,OWNER,NONE
+TRANSFORMER,ADMIN,READWRITE,USAGE
+READER,TRANSFORMER,READ,USAGE
+# LOADER,ADMIN,READWRITE,USAGE
+# ANALYST,ADMIN,READ,USAGE

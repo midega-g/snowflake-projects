@@ -1,0 +1,14 @@
+dbt_tutorial:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: DBT_TUT_TRANSFORMER
+      warehouse: DBT_TUT_WH
+      database: DBT_TUT_DEV
+      schema: STAGING
+      threads: 4
+      query_tag: "{{ env_var('SNOWFLAKE_QUERY_TAG') }}"
