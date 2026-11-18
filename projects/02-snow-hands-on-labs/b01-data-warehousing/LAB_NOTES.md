@@ -129,5 +129,41 @@ snow sql -f projects/02-snow-hands-on-labs/b01-data-warehousing/sql/02_demo_db.s
 - **`IF NOT EXISTS`** lets the script be rerun safely.
 - **No warehouse needed.** `CREATE DATABASE`, `GRANT` and `SHOW` are metadata operations handled by the cloud services layer, so they use no warehouse credits.
 
+## 7. Signing in from VS Code with the key pair
+The [Snowflake extension for VS Code](https://docs.snowflake.com/en/user-guide/vscode-ext) can use the same key pair as the CLI. Select the Snowflake icon in the Activity Bar and fill in the sign-in form:
+
+| Field | Value |
+|---|---|
+| **Account Identifier/URL** | The `SNOWFLAKE_ACCOUNT` value from `.env`, in `orgname-accountname` form |
+| **Auth Method** | **Key Pair** |
+| **Username** | The **login name** (`SNOWFLAKE_USER` in `.env`), not the user name. The wrong one gives the "JWT token is invalid" error from section 5 |
+| **Private key path** | The full path to the `.p8` file, `/home/<you>/.snowflake-keys/hol_b01.p8`. Write it out in full, without `~` |
+| **Passphrase** | Leave it blank |
+
+**Why the passphrase is blank.** A passphrase only exists if you set one when you create or convert the key. Snowflake never issues one. The key in section 3 was made with `-nocrypt`, so it has none. The PEM header on the file's first line shows which kind it is. An encrypted key has the word `ENCRYPTED` in it, and an unencrypted one doesn't:
+```bash
+head -1 ~/.snowflake-keys/hol_b01.p8 | grep -q ENCRYPTED && echo "encrypted: passphrase needed" || echo "no passphrase"
+```
+
+After sign-in, the sidebar shows the account, the default role, the **Object Explorer** and the **Query History**. An idle session expires after four hours unless the extension's keep-alive setting is on.
+
+### 7.1 Adding a passphrase later
+The unencrypted key is enough for this learning account. To protect it with a passphrase, encrypt the existing key into a new file. `openssl` asks for the passphrase twice:
+```bash
+cd ~/.snowflake-keys
+openssl pkcs8 -topk8 -v2 aes-256-cbc -in hol_b01.p8 -out hol_b01_enc.p8
+chmod 600 hol_b01_enc.p8
+head -1 hol_b01_enc.p8 | grep -q ENCRYPTED && echo encrypted
+```
+- **`-topk8`** writes PKCS#8, the format Snowflake expects.
+- **`-v2 aes-256-cbc`** encrypts it with AES-256 under that passphrase. Leaving out `-nocrypt` is what turns encryption on.
+- **The public key doesn't change.** It's the same key pair stored in a locked file, so the key registered in section 4 still matches and Snowflake needs no update.
+
+To use the encrypted file:
+- **VS Code:** set **Private key path** to `hol_b01_enc.p8` and enter the passphrase.
+- **`snow`:** point `SNOWFLAKE_PRIVATE_KEY_FILE` at the new file, and set the passphrase in the `PRIVATE_KEY_PASSPHRASE` environment variable for the shell. Don't write it into `.env` or any tracked file.
+
+Once both clients work with the new file, the unencrypted `hol_b01.p8` can be deleted.
+
 ## Next
 Loading and querying data needs a warehouse. Add a dedicated one: XSMALL, `AUTO_SUSPEND=60`, `AUTO_RESUME=TRUE`, with a resource monitor, and never `COMPUTE_WH`.
