@@ -1,0 +1,8 @@
+# Rendered by scripts/use-project.sh into $SNOWFLAKE_HOME/connections.toml (gitignored, chmod 600).
+# No password here: the snow CLI reads SNOWFLAKE_PASSWORD from the environment.
+[${PROJECT_CONN}]
+account = "${SNOWFLAKE_ACCOUNT}"
+user = "${SNOWFLAKE_USER}"
+authenticator = "snowflake"
+role = "${SNOWFLAKE_ROLE}"
+session_parameters = { QUERY_TAG = '{"project":"${PROJECT_NAME}","env":"${PROJECT_ENV}","tool":"snow","owner":"${PROJECT_OWNER}"}' }
